@@ -1,0 +1,113 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  # Actions → Build APK → Run workflow: build again, mark a version as stable, or go back to the stable version
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "build | mark-stable (mark a tested version) | restore-stable (go back to the stable version)"
+        type: choice
+        options: [build, mark-stable, restore-stable]
+        default: build
+      version:
+        description: "For mark-stable: the version number (e.g. 3). Empty = the latest."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      # STABLE holds the tag (vN) of the last version the owner tested and approved
+      - name: Mark stable
+        if: github.event.inputs.action == 'mark-stable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          TAG="v${VERSION#v}"
+          [ -n "$VERSION" ] || TAG=$(gh release view --json tagName -q .tagName)
+          git fetch --tags -f origin
+          git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || { echo "::error::No version $TAG"; exit 1; }
+          echo "$TAG" > STABLE
+          git add STABLE
+          git diff --cached --quiet || { git commit -m "Mark $TAG as the stable version [skip ci]"; git push origin HEAD:main; }
+          echo "::notice::$TAG is now the stable version"
+      - name: Restore stable
+        if: github.event.inputs.action == 'restore-stable'
+        run: |
+          TAG=$(cat STABLE)
+          [ "$TAG" != "v0" ] || { echo "::error::No stable version marked yet"; exit 1; }
+          git fetch --tags -f origin
+          git checkout main
+          # only the app itself goes back; these instructions, this workflow and the key stay
+          git rm -r -q app/src
+          git checkout "$TAG" -- app/src app/build.gradle.kts build.gradle.kts settings.gradle.kts gradle.properties
+          git diff --cached --quiet || { git commit -m "Restore the stable version $TAG"; git push origin main; }
+          echo "::notice::Restored $TAG; publishing it as v${{ github.run_number }}"
+      - name: Commit to publish
+        id: head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        if: github.event.inputs.action != 'mark-stable'
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        if: github.event.inputs.action != 'mark-stable'
+        with:
+          gradle-version: "8.9"
+      - name: Build
+        if: github.event.inputs.action != 'mark-stable'
+        run: gradle :app:assembleRelease --no-daemon
+      # Signed with the permanent key from the repository secrets KEYSTORE_B64 (base64 of a PKCS12 keystore, alias "ipcam")
+      # and KEYSTORE_PASS, so every build updates the installed app in place. The key is never stored in the repository.
+      - name: Sign
+        if: github.event.inputs.action != 'mark-stable'
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/zipalign" -p -f 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+          KS="$RUNNER_TEMP/release.keystore"
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASS" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$KS"
+          else
+            # no permanent key yet: a one-time key, so the APK still installs (the next update will need uninstalling first)
+            echo "::warning::No signing key secrets (KEYSTORE_B64 / KEYSTORE_PASS): signed with a one-time key."
+            KEYSTORE_PASS=$(openssl rand -hex 16)
+            keytool -genkeypair -noprompt -keystore "$KS" -storetype PKCS12 -storepass "$KEYSTORE_PASS" \
+              -alias ipcam -keyalg RSA -keysize 2048 -validity 20000 -dname "CN=ipcam one-time"
+          fi
+          export KEYSTORE_PASS
+          "$BT/apksigner" sign --ks "$KS" --ks-pass env:KEYSTORE_PASS --ks-key-alias ipcam --out ipcam.apk aligned.apk
+          rm -f "$KS"
+          "$BT/apksigner" verify ipcam.apk
+      - uses: actions/upload-artifact@v4
+        if: github.event.inputs.action != 'mark-stable'
+        with:
+          name: ipcam
+          path: ipcam.apk
+      - name: Publish release
+        if: github.event.inputs.action != 'mark-stable'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          target_commitish: ${{ steps.head.outputs.sha }}
+          name: نسخة ${{ github.run_number }}
+          files: ipcam.apk
+          make_latest: true

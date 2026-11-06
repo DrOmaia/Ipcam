@@ -1,0 +1,9 @@
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+# the signing key lives only in the repository secrets, never in the code
+*.keystore
+*.jks
