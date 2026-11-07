@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Live view.
- *  - without Watch.ID: the cameras four per page (light stream). Tap / OK opens one alone here; Back returns to the grid.
+ *  - without Watch.ID: the cameras N per page (Settings, 4 by default; light stream). Tap / OK opens one alone here; Back returns to the grid.
  *  - with Watch.ID: that camera alone, full quality; ‹ › go through the others; Back closes.
  *  - Watch.GROUP: only the cameras of that group. Watch.TOUR: one camera after the other by itself.
  *  - Watch.IDS (floating video of the live camera widget): only those cameras, alone, one after the other every
@@ -68,6 +68,8 @@ class WatchActivity : Base() {
     private var gridRoot = true    // Back from one camera returns to the grid (false when opened on one camera)
     private var index = 0          // the camera shown alone
     private var page = 0           // the page of the grid
+    private var per = 4            // cameras on one page of the grid (Prefs.perPage)
+    private var cols = 2           // columns of the grid now on screen (for the remote at the edge of a page)
     private var hq = true
     private var muted = true
     private var touring = false
@@ -166,6 +168,7 @@ class WatchActivity : Base() {
             finish()
             return
         }
+        per = Prefs.perPage(this)
         val tourAsked = intent.getBooleanExtra(Watch.TOUR, false)
         cycleSec = maxOf(0, intent.getIntExtra(Watch.CYCLE, 0))
         val cycling = asked.isNotEmpty() && cycleSec > 0
@@ -559,7 +562,7 @@ class WatchActivity : Base() {
 
     // ---------------------------------------------------------------- showing the cameras
 
-    private fun pages(): Int = (cams.size + 3) / 4
+    private fun pages(): Int = (cams.size + per - 1) / per
 
     private fun cur(): Camera? = if (single) cams.getOrNull(index) else null
 
@@ -588,10 +591,10 @@ class WatchActivity : Base() {
         } else {
             val n = pages()
             if (page !in 0 until n) page = 0
-            val from = page * 4
-            for (pos in from until minOf(cams.size, from + 4)) {
+            val from = page * per
+            for (pos in from until minOf(cams.size, from + per)) {
                 val tile = Tile(this, cams[pos], main = false, showName = true) { openOne(pos) }
-                tile.muted = true // never four sounds at once
+                tile.muted = true // never several sounds at once
                 tiles.add(tile)
             }
             bar.visibility = View.GONE
@@ -610,16 +613,18 @@ class WatchActivity : Base() {
     }
 
     // 1 → whole screen; 2 → side by side (landscape) or one above the other (portrait);
-    // 3–4 → 2 × 2 (landscape, TV) or one column (phone upright, each picture wider)
+    // 3–4 → 2 × 2 (landscape, TV) or one column (phone upright, each picture wider);
+    // more (Settings → cameras per page): 3 × 2, 3 × 3, 4 × 3, 4 × 4 (landscape) or 2–3 columns (phone upright)
     private fun layoutTiles(force: Boolean) {
         val views = tiles.map { it.view }
         val wide = tv || resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-        val rows: List<List<View>> = when (views.size) {
-            0 -> emptyList()
-            1 -> listOf(views)
-            2 -> if (wide) listOf(views) else views.map { listOf(it) }
-            else -> if (wide) views.chunked(2) else views.map { listOf(it) }
+        val n = views.size
+        cols = when {
+            n <= 1 -> 1
+            wide -> when { n <= 4 -> 2; n <= 9 -> 3; else -> 4 }
+            else -> when { n <= 4 -> 1; n <= 8 -> 2; else -> 3 }
         }
+        val rows: List<List<View>> = if (n == 0) emptyList() else views.chunked(cols)
         val key = views.size.toString() + ":" + rows.joinToString(",") { it.size.toString() }
         if (!force && key == rowsKey) return // same arrangement: the videos stay where they are
         rowsKey = key
@@ -634,8 +639,8 @@ class WatchActivity : Base() {
                 lp.setMargins(gap, gap, gap, gap)
                 row.addView(v, lp)
             }
-            // a third camera alone keeps the same size as the others
-            if (wide && r.size == 1 && views.size == 3) row.addView(View(this), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            // the last row keeps the same picture size as the others (empty places after it)
+            if (rows.size > 1) repeat(cols - r.size) { row.addView(View(this), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)) }
             grid.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
     }
@@ -692,8 +697,8 @@ class WatchActivity : Base() {
         stopTour()
         single = false
         gridRoot = true
-        page = index / 4
-        focusPos = index % 4
+        page = index / per
+        focusPos = index % per
         render()
     }
 
@@ -724,7 +729,7 @@ class WatchActivity : Base() {
         val left = code == KeyEvent.KEYCODE_DPAD_LEFT
         if (f.focusSearch(if (left) View.FOCUS_LEFT else View.FOCUS_RIGHT) != null) return false
         val d = if (left == rtl) 1 else -1
-        goPage(d, (pos / 2) * 2 + (if (d > 0) 0 else 1))
+        goPage(d, (pos / cols) * cols + (if (d > 0) 0 else cols - 1))
         return true
     }
 
@@ -830,7 +835,7 @@ class WatchActivity : Base() {
         barOn = false
         if (!single) {
             single = true
-            index = page * 4
+            index = page * per
             render()
         } else {
             bar.visibility = View.GONE

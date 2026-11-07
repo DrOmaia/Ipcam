@@ -92,6 +92,9 @@
 
         <activity android:name=".EventsActivity" />
 
+        <!-- the order of the cameras and groups (Settings → All cameras) -->
+        <activity android:name=".ArrangeActivity" />
+
         <!-- phone as a camera -->
         <activity
             android:name=".CameraModeActivity"

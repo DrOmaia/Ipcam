@@ -129,6 +129,22 @@ class SettingsActivity : Base() {
             Ui.below(this, 8),
         )
 
+        // all cameras: how many on one page (this device), and the order of the cameras
+        val grid = section(t("كل الكاميرات", "All cameras"))
+        grid.addView(note(t("عدد الكاميرات في الصفحة الواحدة على هذا الجهاز، وترتيب الكاميرات.",
+            "How many cameras on one page on this device, and the order of the cameras.")))
+        val per = Prefs.perPage(this)
+        val perBtn = Ui.button(this, t("عدد الكاميرات في الصفحة: ", "Cameras per page: ") + per + "  ▾") { pickPerPage() }
+        perBtn.tag = "perPage"
+        grid.addView(perBtn, Ui.below(this, 8))
+        if (per > 6) {
+            grid.addView(note(t("إذا بقيت بعض المربعات سوداء أو ظهرت فيها رسالة خطأ، اختر عددًا أصغر: بعض الأجهزة لا تتحمّل فيديوهات كثيرة معًا.",
+                "If some squares stay black or show an error, choose fewer: some devices cannot play many videos at once.")), Ui.below(this, 6))
+        }
+        grid.addView(Ui.button(this, t("☰ ترتيب الكاميرات", "☰ Arrange cameras")) {
+            startActivity(Intent(this, ArrangeActivity::class.java))
+        }, Ui.below(this, 8))
+
         buildAlerts()
 
         // lock
@@ -180,6 +196,21 @@ class SettingsActivity : Base() {
                 v.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null)
             }
         }
+    }
+
+    // 1 … 16 cameras on one page of «all cameras»
+    private fun pickPerPage() {
+        val labels = Array(16) { Ui.cameras(this, it + 1) }
+        AlertDialog.Builder(this)
+            .setTitle(t("عدد الكاميرات في الصفحة", "Cameras per page"))
+            .setSingleChoiceItems(labels, Prefs.perPage(this) - 1) { d, which ->
+                d.dismiss()
+                Prefs.put(this, "perPage", which + 1)
+                focusTag = "perPage"
+                build()
+            }
+            .setNegativeButton(t("إلغاء", "Cancel"), null)
+            .show()
     }
 
     // «10 ثوانٍ», «15 ثانية» / "10 seconds"

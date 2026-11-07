@@ -32,6 +32,9 @@ object Prefs {
     /** Seconds each camera stays on screen in the automatic tour. */
     fun tourSec(c: Context) = int(c, "tourSec", 15)
 
+    /** Cameras on one page of «all cameras» (1–16), chosen on each device. */
+    fun perPage(c: Context) = int(c, "perPage", 4).coerceIn(1, 16)
+
     /** Motion alerts on this device (phone: notification; TV: the camera pops up over other apps). */
     fun alertsOn(c: Context) = bool(c, "alertsOn", false)
 

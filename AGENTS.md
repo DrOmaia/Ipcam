@@ -29,7 +29,7 @@ screen; Arabic right to left). Night colours (navy + gold, like prayer-tv).
   shows one or several chosen cameras as a picture refreshed every 1–10 s (switching camera every 10–60 s), ▶ / ⏸ / ⏭,
   ⧉ = floating live video (picture-in-picture over the home screen), stops by itself after 5 minutes.
 - **Watch**: one camera (full quality, sound, snapshot, recording, pinch zoom, picture-in-picture on phones, PTZ arrows
-  for moving cameras, push-to-talk to phone cameras) or **all cameras** four per page (light stream); **tour** (one
+  for moving cameras, push-to-talk to phone cameras) or **all cameras** N per page (Settings → All cameras: 1–16, chosen on each device, `Prefs.perPage`; light stream); **tour** (one
   camera after the other); remote keys: ◄ ► next / previous, 1–9 camera N, 0 grid, OK menu.
 - **Move cameras over the same Wi-Fi** to the TV or a family phone (Settings → Send / Receive, 4-digit code on the
   receiving screen). This is the only way camera passwords leave a device, and only by the owner's action.
@@ -54,7 +54,8 @@ User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md
 | `ScanActivity.kt`, `Discovery.kt` | Network search: ONVIF WS-Discovery, RTSP 554 / 8080 scan, phones (`PhoneCams`); `reachable()`. |
 | `WatchActivity.kt`, `Tile.kt` | Live view (grid / single / tour / PiP / remote keys / PTZ pad / talk); one video with zoom & snapshot. |
 | `Media.kt`, `Recorder.kt` | Save snapshots and recorded clips to the gallery. |
-| `SettingsActivity.kt` | Language, opening, tour, motion alerts + hours + permissions, PIN, moving cameras, phone camera, updates. |
+| `SettingsActivity.kt` | Language, opening, tour, all cameras (per page, arrange), motion alerts + hours + permissions, PIN, moving cameras, phone camera, updates. |
+| `ArrangeActivity.kt` | «ترتيب الكاميرات»: order of the cameras in each group and of the groups (phone: drag by ☰ / the group title; TV: OK, ▲ ▼, OK); saved with `Store.reorder`. |
 | `LockActivity.kt` | PIN pad (also choosing a PIN). |
 | `Transfer.kt`, `TransferActivity.kt` | Send / receive cameras on the same Wi-Fi (NSD `_ipcamshare._tcp`, code). |
 | `Onvif.kt`, `Alerts.kt` | ONVIF client (PTZ, snapshot, events); alert service (alerts by type), TV pop-up, boot receiver. |

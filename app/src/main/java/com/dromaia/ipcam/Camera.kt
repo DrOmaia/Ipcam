@@ -269,5 +269,15 @@ object Store {
     }
 
     /** The groups in the order they first appear. */
+    /** New order of the cameras ([ids] first, in that order; any other camera keeps its place after them). */
+    @Synchronized
+    fun reorder(c: Context, ids: List<String>) {
+        val list = all(c)
+        val pos = HashMap<String, Int>()
+        ids.forEachIndexed { i, id -> pos[id] = i }
+        val sorted = list.sortedBy { pos[it.id] ?: Int.MAX_VALUE } // stable: the others stay as they were
+        if (sorted.map { it.id } != list.map { it.id }) write(c, sorted)
+    }
+
     fun groups(c: Context): List<String> = all(c).map { it.group.trim() }.filter { it.isNotEmpty() }.distinct()
 }
