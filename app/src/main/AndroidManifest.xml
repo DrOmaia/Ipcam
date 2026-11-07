@@ -33,6 +33,11 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
+    <!-- «open in the Tapo app» (a Tapo camera at another house): Android 11+ must be told which app we look for -->
+    <queries>
+        <package android:name="com.tplink.iot" />
+    </queries>
+
     <!-- allowBackup off: camera passwords stay on this device only.
          cleartext on: cameras on the home network speak plain HTTP (ONVIF, snapshots) -->
     <application

@@ -45,6 +45,8 @@ screen; Arabic right to left). Night colours (navy + gold, like prayer-tv).
   play from any time), **events** list (person / vehicle / motion / line), alerts by type (`Camera.alertWhat`, AcuSense).
 - **Watching from outside the home** (e.g. the owner's recorder in Irbid): per camera an outside address
   (`remoteHost/remotePort/remoteHttp`); `Route` tries the local address first on the camera's own network, else the outside one.
+  A Tapo camera at another house (no router access): the camera's menu has «افتح في تطبيق Tapo» (opens `com.tplink.iot`,
+  or its Google Play page; `<queries>` in the manifest).
 - Optional **PIN lock**. **Updates** from Settings: shows this version, the newest and the stable one.
 User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md`.
 

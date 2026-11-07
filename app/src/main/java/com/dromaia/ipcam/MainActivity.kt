@@ -1,10 +1,12 @@
 package com.dromaia.ipcam
 
 import android.app.AlertDialog
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.graphics.drawable.Icon
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
@@ -399,12 +401,36 @@ class MainActivity : Base() {
             items.add(t("التسجيلات", "Recordings") to { startActivity(Intent(this, PlaybackActivity::class.java).putExtra("id", cam.id)) })
             items.add(t("الأحداث", "Events") to { startActivity(Intent(this, EventsActivity::class.java).putExtra("id", cam.id)) })
         }
+        // a Tapo camera on another network (e.g. at another house): Tapo's own app reaches it over the internet
+        if (cam.brand == Brand.TAPO) items.add(t("افتح في تطبيق Tapo", "Open in the Tapo app") to { openTapo() })
         items.add(t("تعديل", "Edit") to { startActivity(Intent(this, EditActivity::class.java).putExtra("id", cam.id)) })
         if (Build.VERSION.SDK_INT >= 26 && !tv) items.add(t("اختصار على الشاشة الرئيسية", "Shortcut on the home screen") to { pinShortcut(cam) })
         AlertDialog.Builder(this)
             .setTitle(cam.name)
             .setItems(items.map { it.first }.toTypedArray()) { _, which -> items[which].second() }
             .show()
+    }
+
+    // the Tapo app (it opens on its own home page: it cannot be told which camera); Google Play when it is missing
+    private fun openTapo() {
+        val pkg = "com.tplink.iot"
+        val app = packageManager.getLaunchIntentForPackage(pkg) ?: packageManager.getLeanbackLaunchIntentForPackage(pkg)
+        if (app != null) {
+            try {
+                startActivity(app)
+                return
+            } catch (_: ActivityNotFoundException) {
+            }
+        }
+        Toast.makeText(this, t("تطبيق Tapo غير مثبّت على هذا الجهاز، ثبّته من Google Play", "The Tapo app is not on this device, install it from Google Play"),
+            Toast.LENGTH_LONG).show()
+        for (u in listOf("market://details?id=$pkg", "https://play.google.com/store/apps/details?id=$pkg")) {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)))
+                return
+            } catch (_: ActivityNotFoundException) {
+            }
+        }
     }
 
     private fun receive() = startActivity(Intent(this, TransferActivity::class.java).putExtra(TransferActivity.MODE, "receive"))
