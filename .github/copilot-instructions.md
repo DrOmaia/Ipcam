@@ -37,7 +37,7 @@ User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md
 | `Ui.kt` | Colours, buttons, fields, Arabic number agreement (`count`, `cameras`, `devices`). |
 | `app/src/main/AndroidManifest.xml`, `app/src/main/res/` | Permissions, icon, TV banner, app name. |
 | `.github/workflows/build.yml` | Builds, signs and publishes every push to `main` as release `vN`; "mark stable" and "restore stable". |
-| Repository secrets `KEYSTORE_B64`, `KEYSTORE_PASS` | The signing key (base64 PKCS12, alias `ipcam`) and its password. **Never change or replace them**: a different key stops installed apps from updating. Never put a key or password in the code. |
+| Repository secrets `KEYSTORE_B64`, `KEYSTORE_PASS` | The signing key (base64 PKCS12, EC P-256, alias `ipcam`) and its password; without them CI signs with a one-time key and warns. **Never change or replace them**: a different key stops installed apps from updating. Never put a key or password in the code. |
 
 RTSP links (`Camera.rtsp`): Hikvision `/Streaming/Channels/{ch}01` (main) and `{ch}02` (sub);
 Dahua `/cam/realmonitor?channel={ch}&subtype=0|1`; Tapo `/stream1` and `/stream2`. User and password are URL-encoded.

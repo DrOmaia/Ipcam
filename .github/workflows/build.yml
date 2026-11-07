@@ -85,7 +85,9 @@ jobs:
           "$BT/zipalign" -p -f 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
           KS="$RUNNER_TEMP/release.keystore"
           if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASS" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > "$KS"
+            # pasted on a phone: ignore stray spaces / line breaks
+            KEYSTORE_PASS=$(printf %s "$KEYSTORE_PASS" | tr -d '[:space:]')
+            printf %s "$KEYSTORE_B64" | tr -d '[:space:]' | base64 -d > "$KS"
           else
             # no permanent key yet: a one-time key, so the APK still installs (the next update will need uninstalling first)
             echo "::warning::No signing key secrets (KEYSTORE_B64 / KEYSTORE_PASS): signed with a one-time key."
