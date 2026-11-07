@@ -41,7 +41,7 @@ User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md
 | `Ui.kt` | Colours, buttons, fields, Arabic number agreement (`count`, `cameras`, `devices`). |
 | `app/src/main/AndroidManifest.xml`, `app/src/main/res/` | Permissions, icon, TV banner, app name. |
 | `.github/workflows/build.yml` | Builds, signs and publishes every push to `main` as release `vN`; "mark stable" and "restore stable". |
-| Repository secrets `KEYSTORE_B64`, `KEYSTORE_PASS` | The signing key (base64 PKCS12, EC P-256, alias `ipcam`) and its password; without them CI signs with a one-time key and warns. **Never change or replace them**: a different key stops installed apps from updating. Never put a key or password in the code. |
+| `app/release.keystore` | The signing key (PKCS12, EC P-256, alias `ipcam`). Public in this repository by the owner's choice (same as prayer-tv and Mani). **Never change, delete or replace it**: a different key stops installed apps from updating. |
 
 RTSP links (`Camera.rtsp`): Hikvision `/Streaming/Channels/{ch}01` (main) and `{ch}02` (sub);
 Dahua `/cam/realmonitor?channel={ch}&subtype=0|1`; Tapo `/stream1` and `/stream2`. User and password are URL-encoded.
@@ -50,7 +50,7 @@ Dahua `/cam/realmonitor?channel={ch}&subtype=0|1`; Tapo `/stream1` and `/stream2
 1. **No new libraries, build steps or servers** beyond Media3 (already used). Plain Kotlin, screens built in code.
 2. **Keep the saved cameras.** Never rename or remove a stored key (`ipcam` / `cameras`, the JSON fields) without
    reading the old one. Passwords stay on the device only (`allowBackup=false`); never send them anywhere.
-3. **Never touch** the signing-key secrets, the package name `com.dromaia.ipcam`, or the version lines in
+3. **Never touch** `app/release.keystore`, the package name `com.dromaia.ipcam`, or the version lines in
    `app/build.gradle.kts` (version = build number, automatic).
 4. **Arabic text** is correct Modern Standard Arabic, masculine when addressing him, with correct number agreement (`Ui.count`).
 5. **Phone and TV** share the code: everything must also work with the TV remote (buttons and cards are focusable).

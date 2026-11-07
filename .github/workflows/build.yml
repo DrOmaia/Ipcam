@@ -73,31 +73,14 @@ jobs:
       - name: Build
         if: github.event.inputs.action != 'mark-stable'
         run: gradle :app:assembleRelease --no-daemon
-      # Signed with the permanent key from the repository secrets KEYSTORE_B64 (base64 of a PKCS12 keystore, alias "ipcam")
-      # and KEYSTORE_PASS, so every build updates the installed app in place. The key is never stored in the repository.
+      # Signed with app/release.keystore (kept in the repository by the owner's choice, same as prayer-tv and Mani)
+      # so every build updates the installed app in place. Never change or replace that file.
       - name: Sign
         if: github.event.inputs.action != 'mark-stable'
-        env:
-          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
-          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
         run: |
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           "$BT/zipalign" -p -f 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
-          KS="$RUNNER_TEMP/release.keystore"
-          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASS" ]; then
-            # pasted on a phone: ignore stray spaces / line breaks
-            KEYSTORE_PASS=$(printf %s "$KEYSTORE_PASS" | tr -d '[:space:]')
-            printf %s "$KEYSTORE_B64" | tr -d '[:space:]' | base64 -d > "$KS"
-          else
-            # no permanent key yet: a one-time key, so the APK still installs (the next update will need uninstalling first)
-            echo "::warning::No signing key secrets (KEYSTORE_B64 / KEYSTORE_PASS): signed with a one-time key."
-            KEYSTORE_PASS=$(openssl rand -hex 16)
-            keytool -genkeypair -noprompt -keystore "$KS" -storetype PKCS12 -storepass "$KEYSTORE_PASS" \
-              -alias ipcam -keyalg RSA -keysize 2048 -validity 20000 -dname "CN=ipcam one-time"
-          fi
-          export KEYSTORE_PASS
-          "$BT/apksigner" sign --ks "$KS" --ks-pass env:KEYSTORE_PASS --ks-key-alias ipcam --out ipcam.apk aligned.apk
-          rm -f "$KS"
+          "$BT/apksigner" sign --ks app/release.keystore --ks-pass pass:ipcam12345 --ks-key-alias ipcam --out ipcam.apk aligned.apk
           "$BT/apksigner" verify ipcam.apk
       - uses: actions/upload-artifact@v4
         if: github.event.inputs.action != 'mark-stable'

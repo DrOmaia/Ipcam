@@ -11,10 +11,7 @@
 
 ## التحميل
 
-آخر نسخة دائمًا في [Releases](https://github.com/DrOmaia/Ipcam/releases/latest) باسم `ipcam.apk`.
-
-ما دام المستودع **خاصًا (Private)** فالتحميل يحتاج أن تكون مسجّل الدخول في GitHub من المتصفح أو تطبيق GitHub.
-إذا جعلته **عامًا (Public)** مثل prayer-tv وMani، يعمل هذا الرابط المباشر وزر «تحديث التطبيق» داخل التطبيق:
+آخر نسخة دائمًا على هذا الرابط (وزر «تحديث التطبيق» داخل التطبيق ينزّلها ويثبّتها فوق القديمة):
 
 ```
 https://github.com/DrOmaia/Ipcam/releases/latest/download/ipcam.apk
