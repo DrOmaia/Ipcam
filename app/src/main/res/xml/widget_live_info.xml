@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Live camera widget (LiveWidget.kt). Adding it opens WidgetSetupActivity (cameras, refresh and switch intervals);
+     the launcher may open it again later («reconfigurable», Android 9+), as does the ⚙ button. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:configure="com.dromaia.ipcam.WidgetSetupActivity"
+    android:initialLayout="@layout/widget_live"
+    android:minWidth="180dp"
+    android:minHeight="110dp"
+    android:minResizeWidth="140dp"
+    android:minResizeHeight="100dp"
+    android:previewImage="@drawable/banner"
+    android:previewLayout="@layout/widget_live"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="3"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="reconfigurable" />

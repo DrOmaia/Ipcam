@@ -2,4 +2,5 @@
 <!-- the app's name under its icon when the device itself is in English -->
 <resources>
     <string name="app_name">Home Cameras</string>
+    <string name="live_widget">Live camera</string>
 </resources>

@@ -54,10 +54,22 @@ object Watch {
     const val ID = "id"       // String: start on this camera alone (full screen)
     const val GROUP = "group" // String: only the cameras of this group
     const val TOUR = "tour"   // Boolean: automatic tour, one camera after the other
+    const val IDS = "ids"               // String array: only these cameras, in this order (alone, on the first one)
+    const val PIP = "pip"               // Boolean: go to the small floating window at once (phones)
+    const val CYCLE = "cycle"           // Int: seconds before the next camera (0 = no cycling)
+    const val STOP_AFTER = "stopAfter"  // Int: seconds before the live view closes by itself (0 = never)
 
     fun one(c: Context, id: String) = Intent(c, WatchActivity::class.java).putExtra(ID, id)
     fun all(c: Context, group: String? = null) = Intent(c, WatchActivity::class.java).also { if (group != null) it.putExtra(GROUP, group) }
     fun tour(c: Context, group: String? = null) = all(c, group).putExtra(TOUR, true)
+
+    /** Floating live video (the live camera widget's ⧉): these cameras in a small window, one after the other. */
+    fun floating(c: Context, ids: List<String>, cycleSec: Int, stopAfterSec: Int): Intent =
+        Intent(c, WatchActivity::class.java)
+            .putExtra(IDS, ids.toTypedArray())
+            .putExtra(PIP, true)
+            .putExtra(CYCLE, cycleSec)
+            .putExtra(STOP_AFTER, stopAfterSec)
 }
 
 // The optional PIN: asked when the app opens, and again when the app comes back after more than 30 seconds away.

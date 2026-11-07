@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.TextUtils
 import android.util.Rational
 import android.view.Gravity
@@ -26,6 +27,7 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import java.lang.ref.WeakReference
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -36,6 +38,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - without Watch.ID: the cameras four per page (light stream). Tap / OK opens one alone here; Back returns to the grid.
  *  - with Watch.ID: that camera alone, full quality; ‹ › go through the others; Back closes.
  *  - Watch.GROUP: only the cameras of that group. Watch.TOUR: one camera after the other by itself.
+ *  - Watch.IDS (floating video of the live camera widget): only those cameras, alone, one after the other every
+ *    Watch.CYCLE seconds; Watch.PIP = the small window at once (phones); closes by itself after Watch.STOP_AFTER s.
  * One camera alone has a bar: back, previous / next, sound, photo, recording, quality, moving the camera (PTZ),
  * talking (phone cameras), mini window (phone), tour, recordings and events (Hikvision), edit. The grid's bar has
  * the events too when a camera is Hikvision. On a TV the bar is hidden until OK / Menu, and the remote
@@ -49,8 +53,15 @@ class WatchActivity : Base() {
         private const val REQ_MIC = 43
         private const val SPEED = 0.5f       // PTZ speed (-1..1)
         private const val BAR_MS = 6000L     // TV: the bar hides after 6 s without keys
+
+        // the floating live video now open (from the live camera widget): a new one closes it (main thread only)
+        private var floatingNow: WeakReference<WatchActivity>? = null
     }
 
+    private var cycleSec = 0       // Watch.CYCLE: seconds between cameras (0 = the tour's own setting)
+    private var autoPip = false    // Watch.PIP: go to the small window as soon as the screen shows
+    private var stopAt = 0L        // Watch.STOP_AFTER: when it closes by itself (elapsedRealtime; 0 = never)
+    private val closeRun = Runnable { closeByItself() }
     private var cams: List<Camera> = emptyList()
     private var group: String? = null
     private var single = false     // one camera alone (else the grid of four)
@@ -139,10 +150,16 @@ class WatchActivity : Base() {
 
         val id = intent.getStringExtra(Watch.ID)
         group = intent.getStringExtra(Watch.GROUP)?.trim()?.ifEmpty { null }
+        // Watch.IDS (the live camera widget): only these cameras, in this order; deleted ones are left out
+        val asked = intent.getStringArrayExtra(Watch.IDS)?.filter { it.isNotEmpty() } ?: emptyList()
         val all = Store.all(this)
         val g = group
         var list: List<Camera> = if (g != null) all.filter { it.group.trim() == g } else all
         if (id != null && list.none { it.id == id }) list = all // the camera is not in that group: go through all
+        if (asked.isNotEmpty()) {
+            val byId = all.associateBy { it.id }
+            list = asked.distinct().mapNotNull { byId[it] }
+        }
         cams = list
         if (cams.isEmpty()) {
             toast(t("لا توجد كاميرات", "No cameras"))
@@ -150,11 +167,14 @@ class WatchActivity : Base() {
             return
         }
         val tourAsked = intent.getBooleanExtra(Watch.TOUR, false)
-        single = id != null || tourAsked
-        gridRoot = id == null
-        index = if (id != null) maxOf(0, cams.indexOfFirst { it.id == id }) else 0
-        touring = tourAsked && cams.size > 1
+        cycleSec = maxOf(0, intent.getIntExtra(Watch.CYCLE, 0))
+        val cycling = asked.isNotEmpty() && cycleSec > 0
+        single = id != null || tourAsked || asked.isNotEmpty()
+        gridRoot = id == null && asked.isEmpty()
+        index = if (id != null && asked.isEmpty()) maxOf(0, cams.indexOfFirst { it.id == id }) else 0
+        touring = (tourAsked || cycling) && cams.size > 1
         barOn = !tv && !touring
+        startFloating(saved)
         if (saved != null) {
             single = saved.getBoolean("single", single)
             gridRoot = saved.getBoolean("gridRoot", gridRoot)
@@ -224,6 +244,8 @@ class WatchActivity : Base() {
         out.putBoolean("muted", muted)
         out.putBoolean("tour", touring)
         out.putBoolean("barOn", barOn)
+        out.putBoolean("autoPip", autoPip)
+        out.putLong("stopAt", stopAt)
     }
 
     // the video plays only while the screen is in front (no data used in the background)
@@ -260,7 +282,14 @@ class WatchActivity : Base() {
         super.onStop()
     }
 
+    // Watch.PIP: the small window as soon as the screen shows (after the PIN, when the lock asks for it)
+    override fun onResume() {
+        super.onResume()
+        if (autoPip && ::root.isInitialized) root.post { autoEnterPip() }
+    }
+
     override fun onDestroy() {
+        if (floatingNow?.get() === this) floatingNow = null
         ui.removeCallbacksAndMessages(null)
         try {
             work.shutdown()
@@ -669,7 +698,11 @@ class WatchActivity : Base() {
     }
 
     private fun goBack() {
-        if (single && gridRoot) toGrid() else finish()
+        when {
+            single && gridRoot -> toGrid()
+            floatingNow?.get() === this -> closeByItself() // its own task: no empty entry left in the recent apps
+            else -> finish()
+        }
     }
 
     /** Next (+1) / previous (−1) page of the grid; [focus] = the tile to focus there. */
@@ -819,7 +852,9 @@ class WatchActivity : Base() {
 
     private fun scheduleTour() {
         ui.removeCallbacks(tourRun)
-        ui.postDelayed(tourRun, maxOf(5, Prefs.tourSec(this)) * 1000L)
+        // the floating video of the live camera widget changes camera at the widget's own interval
+        val sec = if (cycleSec > 0) cycleSec else Prefs.tourSec(this)
+        ui.postDelayed(tourRun, maxOf(5, sec) * 1000L)
     }
 
     // ✎: the edit screen for this camera; back here, onStart reads the cameras again
@@ -1111,6 +1146,47 @@ class WatchActivity : Base() {
         }
     }
 
+    // Opened as the floating live video (Watch.floating, from the live camera widget): only one at a time, the small
+    // window at once on phones (full screen on a TV or without picture-in-picture), and it closes by itself in the end
+    private fun startFloating(saved: Bundle?) {
+        val after = intent.getIntExtra(Watch.STOP_AFTER, 0)
+        val asked = intent.getBooleanExtra(Watch.PIP, false)
+        if (asked || after > 0) {
+            val old = floatingNow?.get()
+            if (old != null && old !== this && !old.isFinishing) {
+                try {
+                    if (old.isTaskRoot) old.finishAndRemoveTask() else old.finish()
+                } catch (_: Exception) {
+                }
+            }
+            floatingNow = WeakReference(this)
+        }
+        autoPip = asked && pipOk
+        stopAt = if (after > 0) SystemClock.elapsedRealtime() + after * 1000L else 0L
+        if (saved != null) {
+            autoPip = saved.getBoolean("autoPip", autoPip)
+            stopAt = saved.getLong("stopAt", stopAt)
+        }
+        if (stopAt > 0) ui.postDelayed(closeRun, maxOf(0L, stopAt - SystemClock.elapsedRealtime()))
+    }
+
+    // once, when the screen is in front and the PIN (if any) was entered
+    private fun autoEnterPip() {
+        if (!autoPip || !::grid.isInitialized || pip || stopped || isFinishing || Lock.needed(this)) return
+        autoPip = false
+        enterPip()
+    }
+
+    // the time of the floating video is over: the window closes (and leaves no entry in the recent apps)
+    private fun closeByItself() {
+        if (isFinishing) return
+        try {
+            if (isTaskRoot) finishAndRemoveTask() else finish()
+        } catch (_: Exception) {
+            finish()
+        }
+    }
+
     // Home pressed while watching one camera: keep watching in a small window
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
@@ -1297,6 +1373,7 @@ class WatchActivity : Base() {
             ptzMode -> leavePtz()
             single && tv && bar.visibility == View.VISIBLE -> showBar(false)
             single && gridRoot -> toGrid()
+            floatingNow?.get() === this -> closeByItself()
             else -> super.onBackPressed()
         }
     }

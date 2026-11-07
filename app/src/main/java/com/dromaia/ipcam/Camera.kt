@@ -240,6 +240,7 @@ object Store {
         c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, a.toString()).apply()
         try { Alerts.refresh(c) } catch (_: Exception) {}
         CamWidget.updateAll(c)
+        try { LiveWidget.updateAll(c) } catch (_: Exception) {} // a renamed / deleted camera shows at once
     }
 
     fun get(c: Context, id: String): Camera? = all(c).firstOrNull { it.id == id }

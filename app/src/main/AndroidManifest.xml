@@ -128,5 +128,33 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_cams_info" />
         </receiver>
+
+        <!-- live camera widget: its settings (opened by the launcher when the widget is added, and by its ⚙ button) -->
+        <activity
+            android:name=".WidgetSetupActivity"
+            android:excludeFromRecents="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <!-- live camera widget: refreshes the pictures while a widget plays (at most 5 minutes) -->
+        <service
+            android:name=".LiveService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <receiver
+            android:name=".LiveWidget"
+            android:exported="false"
+            android:label="@string/live_widget">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_live_info" />
+        </receiver>
     </application>
 </manifest>

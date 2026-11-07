@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Live camera widget: a picture refreshed every few seconds, the camera's name and the time of the picture, and the
+     buttons ▶/⏸ start / stop, ⏭ next camera, ⧉ floating live video, ⚙ settings. Texts are filled in LiveWidget.kt;
+     the ones here are for the preview in the widget list only. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/live_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_bg"
+    android:orientation="vertical"
+    android:padding="6dp">
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <!-- the picture: rounded corners on Android 12+ (clipToOutline), square inside the rounded box before -->
+        <ImageView
+            android:id="@+id/live_pic"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/widget_btn"
+            android:clipToOutline="true"
+            android:scaleType="centerCrop" />
+
+        <!-- «متوقف — اضغط ▶», «جارٍ التحميل…», «اضغط ⚙ لاختيار الكاميرات» -->
+        <TextView
+            android:id="@+id/live_msg"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:layout_margin="8dp"
+            android:background="@drawable/widget_btn"
+            android:gravity="center"
+            android:maxLines="2"
+            android:paddingStart="12dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="6dp"
+            android:textColor="#F2EFE8"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <!-- «تعذّر التحديث»: the last picture stays -->
+        <TextView
+            android:id="@+id/live_err"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_margin="6dp"
+            android:background="@drawable/widget_btn"
+            android:paddingStart="8dp"
+            android:paddingTop="3dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="3dp"
+            android:singleLine="true"
+            android:textColor="#E87A72"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <!-- the camera's name and the time of the picture -->
+        <LinearLayout
+            android:id="@+id/live_info"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:layout_margin="6dp"
+            android:background="@drawable/widget_btn"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingTop="3dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="3dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/live_name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxWidth="180dp"
+                android:singleLine="true"
+                android:textColor="#F2EFE8"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/live_time"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:singleLine="true"
+                android:textColor="#D4A94F"
+                android:textDirection="ltr"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- the buttons: at least 44 dp high -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/live_play"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="3dp"
+            android:layout_marginEnd="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_btn_gold"
+            android:gravity="center"
+            android:text="&#x25B6;&#xFE0E;"
+            android:textColor="#0E1424"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/live_next"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="3dp"
+            android:layout_marginEnd="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_btn"
+            android:gravity="center"
+            android:text="&#x23ED;&#xFE0E;"
+            android:textColor="#F2EFE8"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/live_float"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="3dp"
+            android:layout_marginEnd="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_btn"
+            android:gravity="center"
+            android:text="&#x29C9;"
+            android:textColor="#F2EFE8"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/live_setup"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="3dp"
+            android:layout_marginEnd="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_btn"
+            android:gravity="center"
+            android:text="&#x2699;&#xFE0E;"
+            android:textColor="#F2EFE8"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+</LinearLayout>

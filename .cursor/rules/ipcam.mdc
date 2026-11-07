@@ -31,7 +31,9 @@ screen; Arabic right to left). Night colours (navy + gold, like prayer-tv).
   password, what to turn on in the make's own app).
 - Add a camera by hand, or **search the network** (ONVIF discovery, RTSP 554, IP Webcam 8080, phones in camera mode).
 - **Groups** (e.g. «داخل البيت», «الحوش»), a green / red **status dot** per camera, **shortcuts** (app icon long-press,
-  pinned shortcut per camera) and a **home-screen widget**.
+  pinned shortcut per camera) and a **home-screen widget**. A second widget, **«كاميرا حيّة» / "Live camera"**: each one
+  shows one or several chosen cameras as a picture refreshed every 1–10 s (switching camera every 10–60 s), ▶ / ⏸ / ⏭,
+  ⧉ = floating live video (picture-in-picture over the home screen), stops by itself after 5 minutes.
 - **Watch**: one camera (full quality, sound, snapshot, recording, pinch zoom, picture-in-picture on phones, PTZ arrows
   for moving cameras, push-to-talk to phone cameras) or **all cameras** four per page (light stream); **tour** (one
   camera after the other); remote keys: ◄ ► next / previous, 1–9 camera N, 0 grid, OK menu.
@@ -66,6 +68,7 @@ User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md
 | `PlaybackActivity.kt`, `EventsActivity.kt` | Recordings (24 h timeline) and events list of Hikvision recorders. |
 | `CameraModeActivity.kt`, `CameraService.kt`, `RtspServer.kt`, `PhoneCams.kt`, `Talk.kt` | Phone as a camera + talk. |
 | `CamWidget.kt`, `res/layout/widget_cams.xml` | Home-screen widget. |
+| `LiveWidget.kt`, `WidgetSetupActivity.kt`, `Snap.kt`, `res/layout/widget_live.xml`, `res/xml/widget_live_info.xml` | Live camera widget: settings per widget (`LiveConf`, prefs `lw_<id>`), refresh service `LiveService` (5 min), one picture of a camera (`Snap.grab`: snapshot address, else one frame of the light stream); ⧉ opens `Watch.floating`. |
 | `Update.kt` | Newest / stable version from GitHub, download and install. |
 | `Camera.kt` | `Camera`, `Brand` (RTSP link, ports, default user of each make), `Store` (SharedPreferences `ipcam` / key `cameras`). |
 | `Guides.kt` | «How to add it»: numbered steps per make (Arabic / English), shown on the add-camera screen. |
