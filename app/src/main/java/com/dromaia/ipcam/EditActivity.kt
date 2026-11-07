@@ -38,6 +38,14 @@ class EditActivity : Base() {
     private lateinit var hint: TextView
     private lateinit var preview: TextView
     private lateinit var advanced: LinearLayout
+    private lateinit var remoteHostField: EditText
+    private lateinit var remotePortField: EditText
+    private lateinit var remoteHttpField: EditText
+    private lateinit var awayPanel: LinearLayout
+    private lateinit var awayToggle: TextView
+    private var alertWhat = "any"
+    private val alertWhatButtons = HashMap<String, TextView>()
+    private val hikRows = ArrayList<View>()     // «add all the recorder's cameras»: Hikvision only
     private lateinit var more: TextView // opens / closes the ONVIF options
     private val brandButtons = HashMap<Brand, TextView>()
     private val hostRows = ArrayList<View>()    // address, port, user, password: not for «RTSP link»
@@ -161,6 +169,14 @@ class EditActivity : Base() {
         channelField.setText(cam.channel.toString())
         addRow(col, t("رقم القناة (1 للكاميرا المفردة، أو رقم الكاميرا في المسجّل NVR)", "Channel (1 for a single camera, or the camera number on the NVR)"), channelField, channelRows)
 
+        // a Hikvision recorder (DVR / NVR): all its cameras in one go, with the names set in the recorder
+        val addAll = Ui.button(this, t("＋ إضافة كل كاميرات المسجّل", "＋ Add all the recorder's cameras")) { addAllChannels() }
+        col.addView(addAll, Ui.below(this, 10))
+        val addAllNote = note(t("للمسجّل (DVR / NVR): اكتب عنوانه وكلمة مروره مرة واحدة، فتُضاف كاميراته كلها بأسمائها.",
+            "For a recorder (DVR / NVR): type its address and password once and all its cameras are added with their names."))
+        col.addView(addAllNote, Ui.below(this, 4))
+        hikRows.add(addAll); hikRows.add(addAllNote)
+
         urlField = Ui.field(this, "rtsp://user:pass@192.168.1.50:554/stream", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
         urlField.setText(cam.url)
         addRow(col, t("رابط البث الكامل (RTSP)", "Full RTSP link"), urlField, urlRows)
@@ -170,6 +186,22 @@ class EditActivity : Base() {
         popBox = Ui.check(this, t("على التلفزيون: أظهرها فوق التطبيقات عند الحركة", "On the TV: show it over other apps on motion"), cam.popTv)
         ptzBox = Ui.check(this, t("كاميرا متحركة (تدور يمينًا ويسارًا وأعلى وأسفل، وتقرّب وتبعّد)", "Moving camera (pan / tilt / zoom)"), cam.ptz)
         col.addView(alertBox, Ui.below(this, 18))
+        alertWhat = cam.alertWhat
+        val whatRow = LinearLayout(this)
+        for ((k, label) in listOf("any" to t("أي حركة", "Any motion"), "human" to t("شخص فقط", "Person only"),
+            "humanVehicle" to t("شخص أو سيارة", "Person or vehicle"), "vehicle" to t("سيارة فقط", "Vehicle only"))) {
+            val b = Ui.button(this, label) { pickWhat(k) }
+            b.textSize = 13f * Ui.scale(this)
+            b.minHeight = Ui.dp(this, 48)
+            alertWhatButtons[k] = b
+            whatRow.addView(b, Ui.share(this, 3))
+        }
+        val whatScroll = android.widget.HorizontalScrollView(this)
+        whatScroll.isHorizontalScrollBarEnabled = false
+        whatScroll.addView(whatRow)
+        col.addView(whatScroll, Ui.below(this, 6))
+        onvifRows.add(whatScroll)
+        pickWhat(alertWhat)
         col.addView(popBox, Ui.below(this, 2))
         col.addView(ptzBox, Ui.below(this, 2))
         onvifRows.add(alertBox); onvifRows.add(popBox); onvifRows.add(ptzBox)
@@ -196,6 +228,31 @@ class EditActivity : Base() {
         onvifPassField = Ui.field(this, "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         onvifPassField.setText(cam.onvifPass)
         addRow(advanced, t("كلمة مرور ONVIF", "ONVIF password"), onvifPassField, null)
+
+        // watching from outside the home (another house, travelling): an outside address for this camera / recorder
+        awayPanel = LinearLayout(this)
+        awayPanel.orientation = LinearLayout.VERTICAL
+        awayToggle = Ui.button(this, "") { showAway(awayPanel.visibility != View.VISIBLE) }
+        awayToggle.textSize = 14f * Ui.scale(this)
+        col.addView(awayToggle, Ui.below(this, 10))
+        col.addView(awayPanel, Ui.below(this, 0))
+        awayPanel.addView(note(t(
+            "لمشاهدة هذه الكاميرا وأنت بعيد (بيت آخر أو سفر). داخل شبكتها يستعمل التطبيق العنوان العادي، ومن بعيد هذا العنوان، ويختار وحده.\n" +
+                "يكون العنوان واحدًا من: عنوان شبكة VPN مثل Tailscale (الأأمن)، أو اسم DDNS / عنوان الإنترنت للراوتر مع فتح المنافذ.",
+            "To watch this camera while away (another house, travelling). On its own network the app uses the normal address, away this one; it chooses by itself.\n" +
+                "The address is one of: a VPN address such as Tailscale (safest), or the router's DDNS name / internet address with forwarded ports.",
+        )), Ui.below(this, 8))
+        remoteHostField = Ui.field(this, t("مثل: 100.101.12.34 أو irbid.ddns.net", "e.g. 100.101.12.34 or irbid.ddns.net"),
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
+        remoteHostField.setText(cam.remoteHost)
+        addRow(awayPanel, t("العنوان من خارج البيت", "Address from outside"), remoteHostField, null)
+        remotePortField = Ui.field(this, t("فارغ = نفس المنفذ", "empty = same port"), InputType.TYPE_CLASS_NUMBER)
+        if (cam.remotePort > 0) remotePortField.setText(cam.remotePort.toString())
+        addRow(awayPanel, t("منفذ البث من الخارج (RTSP)", "Stream port from outside (RTSP)"), remotePortField, null)
+        remoteHttpField = Ui.field(this, t("فارغ = نفس المنفذ", "empty = same port"), InputType.TYPE_CLASS_NUMBER)
+        if (cam.remoteHttp > 0) remoteHttpField.setText(cam.remoteHttp.toString())
+        addRow(awayPanel, t("منفذ الويب من الخارج (للتسجيلات والتنبيهات)", "Web port from outside (recordings and alerts)"), remoteHttpField, null)
+        showAway(cam.hasRemote())
 
         preview = Ui.text(this, "", 12f, Ui.MUTED)
         preview.textDirection = View.TEXT_DIRECTION_LTR
@@ -275,6 +332,7 @@ class EditActivity : Base() {
         channelRows.forEach { it.visibility = if (b == Brand.HIKVISION || b == Brand.DAHUA) View.VISIBLE else View.GONE }
         urlRows.forEach { it.visibility = if (custom) View.VISIBLE else View.GONE }
         onvifRows.forEach { it.visibility = if (b.onvif) View.VISIBLE else View.GONE }
+        hikRows.forEach { it.visibility = if (b == Brand.HIKVISION) View.VISIBLE else View.GONE }
         if (b.onvif) showAdvanced(false)
         popBox.visibility = if (b.onvif) View.VISIBLE else View.GONE
         if (::onvifPortField.isInitialized) onvifPortField.hint = b.onvifPort.toString()
@@ -308,6 +366,82 @@ class EditActivity : Base() {
         updatePreview()
     }
 
+    private fun showAway(open: Boolean) {
+        awayPanel.visibility = if (open) View.VISIBLE else View.GONE
+        awayToggle.text = t("من خارج البيت (اختياري) ", "From outside the home (optional) ") + if (open) "▴" else "▾"
+        awayToggle.contentDescription = t("من خارج البيت، ", "From outside the home, ") +
+            if (open) t("مفتوحة", "expanded") else t("مغلقة", "collapsed")
+    }
+
+    private fun pickWhat(k: String) {
+        alertWhat = k
+        alertWhatButtons.forEach { (key, b) ->
+            val on = key == k
+            b.background = if (on) Ui.states(this, Ui.GOLD, Ui.GOLD_DOWN) else Ui.states(this, Ui.CARD, Ui.CARD_DOWN)
+            b.setTextColor(if (on) Ui.BG else Ui.TEXT)
+            b.contentDescription = b.text.toString() + if (on) t("، مختار", ", selected") else ""
+        }
+    }
+
+    // reads the recorder's channels (with their names) and adds the chosen ones as cameras of one group
+    private fun addAllChannels() {
+        val probe = Camera()
+        readInto(probe)
+        if (probe.host.isEmpty()) {
+            hostField.error = t("اكتب عنوان المسجّل", "Type the recorder's address")
+            hostField.requestFocus()
+            return
+        }
+        Toast.makeText(this, t("جارٍ قراءة كاميرات المسجّل…", "Reading the recorder's cameras…"), Toast.LENGTH_SHORT).show()
+        Thread {
+            val chans = try { Hik.channels(probe) } catch (_: Exception) { null }
+            val devName = try { Hik.deviceName(probe) } catch (_: Exception) { null }
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                if (chans == null) {
+                    toast(t("تعذّر قراءة المسجّل. تأكد من العنوان وكلمة المرور ومنفذ الويب (ONVIF/HTTP، عادةً 80).",
+                        "Could not read the recorder. Check the address, password and web port (ONVIF/HTTP, usually 80)."))
+                } else if (chans.isEmpty()) {
+                    toast(t("لم يُرجع المسجّل أي كاميرا.", "The recorder returned no cameras."))
+                } else {
+                    chooseChannels(probe, chans, devName)
+                }
+            }
+        }.start()
+    }
+
+    private fun chooseChannels(probe: Camera, chans: List<Hik.Channel>, devName: String?) {
+        val existing = Store.all(this).filter { it.sameDevice(probe) }.map { it.channel }.toSet()
+        val labels = chans.map { ch ->
+            val n = ch.name.ifBlank { t("كاميرا ${ch.no}", "Camera ${ch.no}") }
+            "${ch.no}. $n" + (if (!ch.online) t(" (غير متصلة)", " (offline)") else "") +
+                (if (ch.no in existing) t(" ✓ مضافة", " ✓ added") else "")
+        }.toTypedArray()
+        val picked = BooleanArray(chans.size) { chans[it].no !in existing }
+        val group = probe.group.ifBlank { devName?.trim().orEmpty() }
+        android.app.AlertDialog.Builder(this)
+            .setTitle(t("كاميرات «${devName ?: probe.host}»", "Cameras of “${devName ?: probe.host}”"))
+            .setMultiChoiceItems(labels, picked) { _, i, on -> picked[i] = on }
+            .setPositiveButton(t("إضافة", "Add")) { _, _ ->
+                val adds = ArrayList<Camera>()
+                chans.forEachIndexed { i, ch ->
+                    if (!picked[i] || ch.no in existing) return@forEachIndexed
+                    val c = Camera()
+                    readInto(c)
+                    c.channel = ch.no
+                    c.group = group
+                    c.name = ch.name.ifBlank { (group.ifBlank { t("كاميرا", "Camera") }) + " " + ch.no }
+                    adds.add(c)
+                }
+                if (adds.isEmpty()) return@setPositiveButton
+                Store.merge(this, adds)
+                toast(t("أُضيفت ", "Added ") + Ui.cameras(this, adds.size))
+                finish()
+            }
+            .setNegativeButton(t("إلغاء", "Cancel"), null)
+            .show()
+    }
+
     private fun readInto(c: Camera) {
         c.brand = brand
         c.host = hostField.text.toString().trim()
@@ -324,6 +458,10 @@ class EditActivity : Base() {
         c.onvifPort = onvifPortField.text.toString().trim().toIntOrNull() ?: 0
         c.onvifUser = onvifUserField.text.toString().trim()
         c.onvifPass = onvifPassField.text.toString()
+        c.remoteHost = remoteHostField.text.toString().trim()
+        c.remotePort = remotePortField.text.toString().trim().toIntOrNull() ?: 0
+        c.remoteHttp = remoteHttpField.text.toString().trim().toIntOrNull() ?: 0
+        c.alertWhat = alertWhat
     }
 
     private fun updatePreview() {

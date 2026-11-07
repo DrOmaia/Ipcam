@@ -32,6 +32,11 @@ private val NOTE_RX = Regex(
     RegexOption.DOT_MATCHES_ALL,
 )
 private val MOTION_RX = Regex("Motion|CellMotionDetector|MotionAlarm|VideoMotion", RegexOption.IGNORE_CASE)
+// topics that say what moved (Tapo / Reolink PeopleDetector, VehicleDetector …; line crossing; intrusion)
+private val HUMAN_TOPIC_RX = Regex("People|Human|Person|Pedestrian", RegexOption.IGNORE_CASE)
+private val VEHICLE_TOPIC_RX = Regex("Vehicle|CarDetect", RegexOption.IGNORE_CASE)
+private val LINE_TOPIC_RX = Regex("LineDetector|LineCross|Crossed|Tripwire", RegexOption.IGNORE_CASE)
+private val FIELD_TOPIC_RX = Regex("FieldDetector|Intrusion|ObjectsInside|RegionEntr", RegexOption.IGNORE_CASE)
 private val INITIAL_RX = Regex("PropertyOperation\\s*=\\s*[\"']Initialized", RegexOption.IGNORE_CASE)
 private val ITEM_RX = Regex("<(?:[\\w.-]+:)?SimpleItem\\b([^>]*)>")
 private val PROFILE_RX = Regex(
@@ -48,13 +53,13 @@ private val SERVICE_RX = Regex(
     RegexOption.DOT_MATCHES_ALL,
 )
 private val TIME_RX = Regex("(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(?:[.,]\\d+)?(Z|[+-]\\d{2}:?\\d{2})?")
-private val DIGEST_PARAM_RX = Regex("([\\w-]+)\\s*=\\s*(?:\"([^\"]*)\"|([^\\s,]*))")
 private val PREFIX_RX = Regex("</?([\\w.-]+):|\\s([\\w.-]+):[\\w.-]+\\s*=")
 private val SPACES_RX = Regex("\\s+")
 
 /**
- * ONVIF: the common language of Hikvision, Dahua and Tapo cameras, spoken over plain HTTP on the home Wi-Fi.
- * Used to turn a camera (PTZ), to take a still picture for a motion notification, and to hear about motion.
+ * ONVIF: the common language of Hikvision, Dahua and Tapo cameras, spoken over plain HTTP on the home Wi-Fi (or the
+ * camera's outside address, see [Route]). Used to turn a camera (PTZ), to take a still picture for a motion
+ * notification, and to hear about motion (with its kind when the camera tells: person, vehicle, line crossing).
  * The user name and password go only to the camera itself. Every call blocks: run it off the main thread.
  */
 object Onvif {
@@ -94,12 +99,7 @@ object Onvif {
     private class Auth(val user: String, val pass: String) {
         @Volatile var offset = 0L              // the camera's clock minus this device's clock (ms)
         @Volatile var digest = false           // this camera wants HTTP Digest instead of WS-Security
-        @Volatile var challenge: Challenge? = null
-    }
-
-    /** An HTTP Digest challenge (WWW-Authenticate: Digest …). */
-    private class Challenge(val realm: String, val nonce: String, val qop: String?, val opaque: String?, val algorithm: String?) {
-        val nc = AtomicInteger(0)
+        @Volatile var challenge: Digest.Challenge? = null
     }
 
     private class Profile(val token: String, val source: String, val vsc: String, val ptz: Boolean)
@@ -107,7 +107,10 @@ object Onvif {
     /** What we learned about one camera (kept until a call fails or the camera's settings change). */
     private class Session(
         val sig: String,
-        val host: String,
+        val host: String,        // the address that answered (home or outside, see Route)
+        val httpPort: Int,       // its web port
+        val fixPort: Int,        // port for the camera's service addresses: -1 = the camera's own (at home)
+        val device: String,      // device service on that address
         val auth: Auth,
         val media: String,
         val ptz: String,
@@ -196,6 +199,9 @@ object Onvif {
         val (ou, op) = creds(cam)
         // the ONVIF user first, then the camera's own (Hikvision keeps ONVIF users apart); a refused pair is not tried again
         var pairs = listOf(Pair(ou, op), Pair(cam.user, cam.pass)).distinct()
+        // a Hikvision password its own web language (ISAPI) refused a moment ago is not tried again here
+        if (cam.brand == Brand.HIKVISION && Hik.refused(cam)) pairs = pairs.filter { it != Pair(cam.user, cam.pass) }
+        if (pairs.isEmpty()) return null
         var wasRefused = false
         try {
             val uri = withSession(cam) { s ->
@@ -206,7 +212,7 @@ object Onvif {
                         "<GetSnapshotUri xmlns=\"$MEDIA\"><ProfileToken>${esc(token)}</ProfileToken></GetSnapshotUri>",
                         s.auth,
                     )
-                    val u = fix(tag(x, "Uri"), s.host) ?: throw Fail()
+                    val u = fix(tag(x, "Uri"), s.host, s.fixPort) ?: throw Fail()
                     s.snapUri = u
                     u
                 }
@@ -228,10 +234,12 @@ object Onvif {
             }
         } catch (_: Throwable) {
         }
-        // no picture through ONVIF: the make's own picture address (on the camera's web port)
-        val host = cam.address()
+        // no picture through ONVIF: the make's own picture address (on the camera's web port, at the address that answered)
+        val s = cache[cam.id]
+        val t = if (s == null) Route.targets(cam).firstOrNull() else null
+        val host = s?.host ?: t?.host ?: ""
         if (pairs.isNotEmpty() && host.isNotEmpty()) {
-            val hp = hostPort(host, cam.onvifPortOrDefault())
+            val hp = hostPort(host, s?.httpPort ?: t?.httpPort ?: cam.onvifPortOrDefault())
             val url = when (cam.brand) {
                 Brand.HIKVISION -> "http://$hp/ISAPI/Streaming/channels/${cam.channel}01/picture"
                 Brand.DAHUA -> "http://$hp/cgi-bin/snapshot.cgi?channel=${cam.channel}"
@@ -250,12 +258,18 @@ object Onvif {
         return null
     }
 
+    /** Like [watchEvents], plain motion only: [onMotion] gets true when motion starts and false when it ends. */
+    fun watchMotion(cam: Camera, stop: () -> Boolean, onMotion: (Boolean) -> Unit) =
+        watchEvents(cam, stop) { on, kind -> if (kind == "motion") onMotion(on) }
+
     /**
-     * Listens to the camera's motion events until [stop] says so; [onMotion] gets true when motion starts and false
-     * when it ends. Reconnects by itself (5 s, then longer up to 60 s). After a wrong password it waits 10 minutes,
-     * then 30, then every hour, so the camera does not lock this device out. Never throws. Blocks: run it on its own thread.
+     * Listens to the camera's events until [stop] says so; [onEvent] gets true when something starts and false when
+     * it ends, with its kind: "human" / "vehicle" when the camera's topic says so (person / vehicle detection),
+     * "line" (line crossing), "intrusion", otherwise "motion". Reconnects by itself (5 s, then longer up to 60 s).
+     * After a wrong password it waits 10 minutes, then 30, then every hour, so the camera does not lock this device
+     * out. Never throws. Blocks: run it on its own thread.
      */
-    fun watchMotion(cam: Camera, stop: () -> Boolean, onMotion: (Boolean) -> Unit) {
+    fun watchEvents(cam: Camera, stop: () -> Boolean, onEvent: (on: Boolean, kind: String) -> Unit) {
         var wait = 5_000L
         var refusals = 0
         while (!stop()) {
@@ -268,7 +282,7 @@ object Onvif {
             val worked = AtomicBoolean(false)
             var authFail = false
             try {
-                listen(cam, stop, onMotion, worked)
+                listen(cam, stop, onEvent, worked)
             } catch (e: Fail) {
                 authFail = e.auth
             } catch (_: Throwable) {
@@ -329,7 +343,7 @@ object Onvif {
 
     // ------------------------------------------------------------------ motion events (PullPoint)
 
-    private fun listen(cam: Camera, stop: () -> Boolean, onMotion: (Boolean) -> Unit, worked: AtomicBoolean) {
+    private fun listen(cam: Camera, stop: () -> Boolean, onEvent: (Boolean, String) -> Unit, worked: AtomicBoolean) {
         val s = session(cam)
         var (sub, life) = subscribe(s)
         var expires = SystemClock.elapsedRealtime() + life
@@ -355,9 +369,9 @@ object Onvif {
                 worked.set(true)
                 // some cameras extend the subscription with every pull
                 lifeOrNull(x)?.let { expires = maxOf(expires, SystemClock.elapsedRealtime() + it) }
-                for (on in motions(x, s)) {
+                for ((on, kind) in events(x, s)) {
                     if (stop()) break
-                    onMotion(on)
+                    onEvent(on, kind)
                 }
             }
         } finally {
@@ -375,7 +389,7 @@ object Onvif {
         val addr = tag(ref, "Address") ?: throw Fail()
         val refs = inner(ref, "ReferenceParameters")?.trim() ?: ""
         val ns = if (refs.isEmpty()) "" else namespaces(x, refs)
-        return Pair(Sub(fix(addr, s.host) ?: addr, addr, refs, ns), lifeOrNull(x) ?: 60_000L)
+        return Pair(Sub(fix(addr, s.host, s.fixPort) ?: addr, addr, refs, ns), lifeOrNull(x) ?: 60_000L)
     }
 
     /** New lifetime (ms) after a Renew, or null when the camera cannot renew. */
@@ -415,26 +429,44 @@ object Onvif {
         return sb.toString()
     }
 
-    /** Motion on / off in the order the camera reported them. */
-    private fun motions(xml: String, s: Session): List<Boolean> {
-        val out = ArrayList<Boolean>()
+    /** Events on / off with their kind, in the order the camera reported them. */
+    private fun events(xml: String, s: Session): List<Pair<Boolean, String>> {
+        val out = ArrayList<Pair<Boolean, String>>()
         for (m in NOTE_RX.findAll(xml)) {
             val b = m.value
             val topic = tag(b, "Topic") ?: continue
-            if (!MOTION_RX.containsMatchIn(topic)) continue
+            val data = items(inner(b, "Data") ?: b)
+            val kind = kind(topic, data) ?: continue
             if (s.others.isNotEmpty()) {
                 // a recorder: only this camera's channel
                 val src = items(inner(b, "Source") ?: "").values
                 if (src.any { it in s.others } && src.none { it in s.mine }) continue
             }
-            val data = items(inner(b, "Data") ?: b)
-            val v = data["ismotion"] ?: data["state"] ?: data["value"] ?: continue
+            val v = data["ismotion"] ?: data["state"] ?: data["value"]
+                ?: data.entries.firstOrNull { it.key.startsWith("is") }?.value
+                ?: (if (kind == "line") "true" else null) // a line crossing is a moment: it carries only the object's number
+                ?: continue
             val on = v.equals("true", ignoreCase = true) || v == "1"
             // "Initialized" = the state at the moment of subscribing, not a new movement
             if (on && INITIAL_RX.containsMatchIn(b)) continue
-            out.add(on)
+            out.add(Pair(on, kind))
         }
         return out
+    }
+
+    /** What an event topic reports: human, vehicle, line, intrusion, motion; null = not a detection (tamper, …). */
+    private fun kind(topic: String, data: Map<String, String>): String? {
+        val cls = listOf("classtypes", "class", "objecttype", "type").firstNotNullOfOrNull { data[it] } ?: ""
+        return when {
+            HUMAN_TOPIC_RX.containsMatchIn(topic) || "ispeople" in data || "ishuman" in data -> "human"
+            VEHICLE_TOPIC_RX.containsMatchIn(topic) || "isvehicle" in data -> "vehicle"
+            LINE_TOPIC_RX.containsMatchIn(topic) -> "line"
+            FIELD_TOPIC_RX.containsMatchIn(topic) -> "intrusion"
+            topic.contains("ObjectDetection", ignoreCase = true) && HUMAN_TOPIC_RX.containsMatchIn(cls) -> "human"
+            topic.contains("ObjectDetection", ignoreCase = true) && VEHICLE_TOPIC_RX.containsMatchIn(cls) -> "vehicle"
+            MOTION_RX.containsMatchIn(topic) -> "motion"
+            else -> null
+        }
     }
 
     /** SimpleItem Name → Value (names in lower case). */
@@ -480,8 +512,10 @@ object Onvif {
 
     private fun sig(cam: Camera): String {
         val (u, p) = creds(cam)
-        return listOf(cam.brand.key, cam.address(), cam.onvifPortOrDefault().toString(), cam.channel.toString(), u, p)
-            .joinToString("\u0001")
+        return listOf(
+            cam.brand.key, cam.address(), cam.onvifPortOrDefault().toString(), cam.channel.toString(), u, p,
+            cam.remoteHost.trim(), cam.remoteHttp.toString(),
+        ).joinToString("\u0001")
     }
 
     private fun forget(cam: Camera) {
@@ -510,7 +544,7 @@ object Onvif {
                 return block(cached)
             } catch (e: Fail) {
                 cache.remove(cam.id)
-                if (e.auth && !clockMoved(cam, cached)) throw e
+                if (e.auth && !clockMoved(cached)) throw e
             }
         }
         val s = build(cam, key)
@@ -524,21 +558,43 @@ object Onvif {
     }
 
     /** The camera's clock is now more than 5 s away from the one this session signs with (asked without a password). */
-    private fun clockMoved(cam: Camera, s: Session): Boolean = try {
-        val now = clockOffset(deviceUrl(cam))
+    private fun clockMoved(s: Session): Boolean = try {
+        val now = clockOffset(s.device)
         now != null && abs(now - s.auth.offset) > 5_000L
     } catch (_: Throwable) {
         false
     }
 
-    private fun deviceUrl(cam: Camera): String = "http://${hostPort(cam.address(), cam.onvifPortOrDefault())}/onvif/device_service"
+    private fun deviceUrl(host: String, port: Int): String = "http://${hostPort(host, port)}/onvif/device_service"
 
+    /**
+     * Learns the camera at its addresses in [Route] order (home first on its own network, else the outside one):
+     * the next address is tried when one cannot be reached or refuses (it may be another device on another network).
+     */
     private fun build(cam: Camera, key: String): Session {
-        val host = cam.address()
-        if (host.isEmpty()) throw Fail()
+        if (cam.address().isEmpty()) throw Fail()
+        var refusedErr: Fail? = null
+        var last = Fail()
+        for (t in Route.targets(cam)) {
+            if (t.host.isEmpty()) continue
+            try {
+                val s = buildAt(cam, key, t)
+                Route.worked(cam, t.remote)
+                return s
+            } catch (e: Fail) {
+                if (e.auth) refusedErr = e else last = e
+            }
+        }
+        throw refusedErr ?: last
+    }
+
+    private fun buildAt(cam: Camera, key: String, t: Route.Target): Session {
+        val host = t.host
+        // from outside, every service of the camera is reached on the forwarded web port
+        val fixPort = if (t.remote) t.httpPort else -1
         val (user, pass) = creds(cam)
         val auth = Auth(user, pass)
-        val device = deviceUrl(cam)
+        val device = deviceUrl(host, t.httpPort)
         // Hikvision refuses a sign-in whose time is far from its own clock: sign with the camera's time
         auth.offset = clockOffset(device) ?: 0L
 
@@ -563,7 +619,7 @@ object Onvif {
                 if (e.auth) throw e
             }
         }
-        val mediaUrl = fix(media, host) ?: device
+        val mediaUrl = fix(media, host, fixPort) ?: device
         var profiles: List<Profile> = emptyList()
         try {
             profiles = parseProfiles(soap(mediaUrl, "$MEDIA/GetProfiles", "<GetProfiles xmlns=\"$MEDIA\"/>", auth))
@@ -589,8 +645,8 @@ object Onvif {
             others.removeAll(mine)
         }
         return Session(
-            key, host, auth, mediaUrl, fix(ptz, host) ?: mediaUrl, fix(events, host) ?: device,
-            profile, ptzProfile, mine, others,
+            key, host, t.httpPort, fixPort, device, auth, mediaUrl, fix(ptz, host, fixPort) ?: mediaUrl,
+            fix(events, host, fixPort) ?: device, profile, ptzProfile, mine, others,
         )
     }
 
@@ -666,7 +722,7 @@ object Onvif {
             val r = post(url, action, envelope(security(auth) + header, body, headerNs), null, readMs)
             if (r.ok) return r.text
             if (!r.authFailed) throw Fail()
-            auth.challenge = digestChallenge(r.challenges)
+            auth.challenge = Digest.challenge(r.challenges)
         }
         // HTTP Digest (RFC 2617): some Dahua firmwares refuse WS-Security
         val xml = envelope(header, body, headerNs)
@@ -674,21 +730,21 @@ object Onvif {
         if (ch == null) {
             val r = post(url, action, xml, null, readMs)
             if (r.ok) return r.text
-            ch = digestChallenge(r.challenges) ?: throw Fail(true)
+            ch = Digest.challenge(r.challenges) ?: throw Fail(true)
         }
-        var r = post(url, action, xml, digestHeader(ch, "POST", url, auth.user, auth.pass), readMs)
+        var r = post(url, action, xml, Digest.header(ch, "POST", url, auth.user, auth.pass), readMs)
         if (r.code == 401) {
             // a remembered one-time number expired: answer the camera's new challenge once
             // (a number received just now, or the same number again = wrong password: no second try, so the camera
             // does not lock this device out)
-            val fresh = digestChallenge(r.challenges)
+            val fresh = Digest.challenge(r.challenges)
             if (!remembered || fresh == null || fresh.nonce == ch.nonce) {
                 auth.digest = false
                 auth.challenge = null
                 throw Fail(true)
             }
             ch = fresh
-            r = post(url, action, xml, digestHeader(ch, "POST", url, auth.user, auth.pass), readMs)
+            r = post(url, action, xml, Digest.header(ch, "POST", url, auth.user, auth.pass), readMs)
         }
         if (r.ok) {
             auth.digest = true
@@ -730,47 +786,6 @@ object Onvif {
         f.timeZone = TimeZone.getTimeZone("UTC")
         return f.format(Date(ms))
     }
-
-    /** The best Digest challenge among the WWW-Authenticate headers (MD5 first), or null. */
-    private fun digestChallenge(list: List<String>): Challenge? {
-        val all = list.map { it.trim() }.filter { it.startsWith("Digest", ignoreCase = true) }.mapNotNull { parseDigest(it.substring(6)) }
-        return all.firstOrNull { it.algorithm == null || it.algorithm.startsWith("MD5", ignoreCase = true) } ?: all.firstOrNull()
-    }
-
-    private fun parseDigest(s: String): Challenge? {
-        val m = HashMap<String, String>()
-        for (x in DIGEST_PARAM_RX.findAll(s)) m[x.groupValues[1].lowercase(Locale.US)] = x.groups[2]?.value ?: x.groupValues[3]
-        val nonce = m["nonce"] ?: return null
-        return Challenge(m["realm"] ?: "", nonce, m["qop"], m["opaque"], m["algorithm"])
-    }
-
-    private fun digestHeader(ch: Challenge, method: String, url: String, user: String, pass: String): String {
-        val uri = try { URL(url).file.ifEmpty { "/" } } catch (_: Exception) { "/" }
-        val alg = ch.algorithm ?: "MD5"
-        val hash = if (alg.startsWith("SHA-256", ignoreCase = true)) "SHA-256" else "MD5"
-        val cnonce = hex(ByteArray(8).also { rnd.nextBytes(it) })
-        var ha1 = h(hash, "$user:${ch.realm}:$pass")
-        if (alg.endsWith("-sess", ignoreCase = true)) ha1 = h(hash, "$ha1:${ch.nonce}:$cnonce")
-        val ha2 = h(hash, "$method:$uri")
-        val qopAuth = ch.qop?.split(',')?.any { it.trim().equals("auth", ignoreCase = true) } == true
-        val sb = StringBuilder("Digest username=\"").append(quote(user))
-            .append("\", realm=\"").append(quote(ch.realm))
-            .append("\", nonce=\"").append(ch.nonce)
-            .append("\", uri=\"").append(uri).append('"')
-        if (qopAuth) {
-            val nc = String.format(Locale.US, "%08x", ch.nc.incrementAndGet())
-            sb.append(", qop=auth, nc=").append(nc).append(", cnonce=\"").append(cnonce)
-                .append("\", response=\"").append(h(hash, "$ha1:${ch.nonce}:$nc:$cnonce:auth:$ha2")).append('"')
-        } else {
-            sb.append(", response=\"").append(h(hash, "$ha1:${ch.nonce}:$ha2")).append('"')
-        }
-        if (ch.opaque != null) sb.append(", opaque=\"").append(ch.opaque).append('"')
-        if (ch.algorithm != null) sb.append(", algorithm=").append(ch.algorithm)
-        return sb.toString()
-    }
-
-    private fun basic(user: String, pass: String): String =
-        "Basic " + Base64.encodeToString("$user:$pass".toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
 
     // ------------------------------------------------------------------ HTTP
 
@@ -839,8 +854,8 @@ object Onvif {
         if (r.code == 401) {
             for ((u, p) in creds) {
                 if (u.isEmpty()) continue
-                val ch = digestChallenge(r.challenges)
-                val header = if (ch != null) digestHeader(ch, "GET", url, u, p) else basic(u, p)
+                val ch = Digest.challenge(r.challenges)
+                val header = if (ch != null) Digest.header(ch, "GET", url, u, p) else Digest.basic(u, p)
                 r = http(url, "GET", null, null, header, READ_MS)
                 tried = true
                 if (r.code != 401) break
@@ -869,11 +884,12 @@ object Onvif {
         (if (host.contains(':') && !host.startsWith("[")) "[$host]" else host) + ":" + port
 
     /** The address a camera gave for one of its services, pointed at the address we reach it on. */
-    private fun fix(u: String?, host: String): String? {
+    private fun fix(u: String?, host: String, port: Int): String? {
         val t = u?.trim()?.split(SPACES_RX)?.firstOrNull()?.takeIf { it.isNotEmpty() } ?: return null
         return try {
             val x = URL(t)
-            URL(x.protocol, host, x.port, x.file).toString()
+            // [port] -1 = the camera's own port (at home); from outside the forwarded one
+            URL(x.protocol, host, if (port > 0) port else x.port, x.file).toString()
         } catch (_: Exception) {
             null
         }
@@ -920,6 +936,66 @@ object Onvif {
 
     private fun unesc(s: String): String =
         s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+
+}
+
+/**
+ * HTTP sign-in shared by ONVIF and Hikvision ISAPI: Digest (RFC 2617 / 7616, MD5 or SHA-256, qop=auth) and Basic.
+ * The password itself is never sent with Digest, only a hash bound to the camera's one-time number.
+ */
+internal object Digest {
+    private val PARAM_RX = Regex("([\\w-]+)\\s*=\\s*(?:\"([^\"]*)\"|([^\\s,]*))")
+    private val rnd = SecureRandom()
+
+    /** An HTTP Digest challenge (WWW-Authenticate: Digest …); [nc] counts the answers given to it. */
+    class Challenge(val realm: String, val nonce: String, val qop: String?, val opaque: String?, val algorithm: String?) {
+        val nc = AtomicInteger(0)
+    }
+
+    /** The best Digest challenge among the WWW-Authenticate headers (MD5 first), or null. */
+    fun challenge(list: List<String>): Challenge? {
+        val all = list.map { it.trim() }.filter { it.startsWith("Digest", ignoreCase = true) }.mapNotNull { parse(it.substring(6)) }
+        return all.firstOrNull { it.algorithm == null || it.algorithm.startsWith("MD5", ignoreCase = true) } ?: all.firstOrNull()
+    }
+
+    /** The device also accepts Basic (old firmware). */
+    fun offersBasic(list: List<String>): Boolean = list.any { it.trim().startsWith("Basic", ignoreCase = true) }
+
+    private fun parse(s: String): Challenge? {
+        val m = HashMap<String, String>()
+        for (x in PARAM_RX.findAll(s)) m[x.groupValues[1].lowercase(Locale.US)] = x.groups[2]?.value ?: x.groupValues[3]
+        val nonce = m["nonce"] ?: return null
+        return Challenge(m["realm"] ?: "", nonce, m["qop"], m["opaque"], m["algorithm"])
+    }
+
+    /** The Authorization header answering [ch] for one request (method + the URL's path and query). */
+    fun header(ch: Challenge, method: String, url: String, user: String, pass: String): String {
+        val uri = try { URL(url).file.ifEmpty { "/" } } catch (_: Exception) { "/" }
+        val alg = ch.algorithm ?: "MD5"
+        val hash = if (alg.startsWith("SHA-256", ignoreCase = true)) "SHA-256" else "MD5"
+        val cnonce = hex(ByteArray(8).also { rnd.nextBytes(it) })
+        var ha1 = h(hash, "$user:${ch.realm}:$pass")
+        if (alg.endsWith("-sess", ignoreCase = true)) ha1 = h(hash, "$ha1:${ch.nonce}:$cnonce")
+        val ha2 = h(hash, "$method:$uri")
+        val qopAuth = ch.qop?.split(',')?.any { it.trim().equals("auth", ignoreCase = true) } == true
+        val sb = StringBuilder("Digest username=\"").append(quote(user))
+            .append("\", realm=\"").append(quote(ch.realm))
+            .append("\", nonce=\"").append(ch.nonce)
+            .append("\", uri=\"").append(uri).append('"')
+        if (qopAuth) {
+            val nc = String.format(Locale.US, "%08x", ch.nc.incrementAndGet())
+            sb.append(", qop=auth, nc=").append(nc).append(", cnonce=\"").append(cnonce)
+                .append("\", response=\"").append(h(hash, "$ha1:${ch.nonce}:$nc:$cnonce:auth:$ha2")).append('"')
+        } else {
+            sb.append(", response=\"").append(h(hash, "$ha1:${ch.nonce}:$ha2")).append('"')
+        }
+        if (ch.opaque != null) sb.append(", opaque=\"").append(ch.opaque).append('"')
+        if (ch.algorithm != null) sb.append(", algorithm=").append(ch.algorithm)
+        return sb.toString()
+    }
+
+    fun basic(user: String, pass: String): String =
+        "Basic " + Base64.encodeToString("$user:$pass".toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
 
     private fun quote(s: String): String = s.replace("\\", "\\\\").replace("\"", "\\\"")
 

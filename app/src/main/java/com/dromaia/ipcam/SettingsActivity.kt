@@ -167,6 +167,7 @@ class SettingsActivity : Base() {
             }, Ui.below(this, 8))
         }
 
+        buildAway()
         buildUpdate()
 
         // back on the option just chosen (the rebuild removed the button the remote / TalkBack was on)
@@ -341,6 +342,19 @@ class SettingsActivity : Base() {
     private fun hhmm(m: Int) = "%02d:%02d".format(m / 60, m % 60)
 
     // ---------------------------------------------------------------- updates
+    // watching a camera or a recorder in another house (or while travelling)
+    private fun buildAway() {
+        val s = section(t("المشاهدة من خارج البيت", "Watching from outside the home"))
+        s.addView(note(t(
+            "التطبيق يعمل داخل شبكة الكاميرا مباشرة. لمشاهدتها من بعيد (مثل مسجّل إربد) اكتب لها «العنوان من خارج البيت» في شاشة تعديلها، والتطبيق يختار وحده.\n\n" +
+                "الطريقة الأأمن: Tailscale (VPN مجاني): ثبّته على جهاز يبقى شغّالًا هناك (تلفزيون أندرويد أو جوال قديم على الشاحن) وفعّل فيه «Subnet router» لشبكة المسجّل، وثبّته على جوالك وتلفزيونك بنفس الحساب. بعدها يعمل عنوان المسجّل العادي من أي مكان، بشرط ألّا تكون شبكتا البيتين بنفس الأرقام (مثل 192.168.1.x في الاثنين).\n\n" +
+                "الطريقة الأسهل والأقل أمانًا: فتح المنافذ في راوتر ذلك البيت (RTSP 554 والويب 80) مع اسم DDNS وكلمة مرور قوية للمسجّل.",
+            "The app works directly on the camera's own network. To watch it from far away (e.g. the Irbid recorder) type its “Address from outside” in its edit screen; the app chooses by itself.\n\n" +
+                "Safest: Tailscale (free VPN): install it on a device that stays on there (an Android TV or an old phone on its charger), enable “Subnet router” for the recorder's network, install it on your phone and TV with the same account. The recorder's normal address then works from anywhere, as long as the two houses do not use the same network numbers (e.g. 192.168.1.x in both).\n\n" +
+                "Easiest but less safe: forward ports on that house's router (RTSP 554 and web 80) with a DDNS name and a strong recorder password.",
+        )))
+    }
+
     private fun buildUpdate() {
         val s = section(t("التحديث", "Updates"))
         updateSection = s

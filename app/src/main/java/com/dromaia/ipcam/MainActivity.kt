@@ -124,6 +124,15 @@ class MainActivity : Base() {
             watch.addView(Ui.button(this, t("⟳ جولة", "⟳ Tour")) { startActivity(Watch.tour(this)) }, Ui.share(this, 4))
             body.addView(watch, Ui.below(this, 16))
         }
+        // a Hikvision recorder / camera: its events (person, vehicle, motion) and recordings
+        if (cams.any { it.brand == Brand.HIKVISION }) {
+            val rec = LinearLayout(this)
+            rec.addView(Ui.button(this, t("🔔 الأحداث", "🔔 Events")) { startActivity(Intent(this, EventsActivity::class.java)) }, Ui.share(this, 4))
+            rec.addView(Ui.button(this, t("⏪ التسجيلات", "⏪ Recordings")) {
+                cams.firstOrNull { it.brand == Brand.HIKVISION }?.let { c -> startActivity(Intent(this, PlaybackActivity::class.java).putExtra("id", c.id)) }
+            }, Ui.share(this, 4))
+            body.addView(rec, Ui.below(this, 10))
+        }
         val actions = LinearLayout(this)
         if (cams.isEmpty()) {
             // no camera yet: the network search first (it finds them by itself), then by hand
@@ -241,6 +250,7 @@ class MainActivity : Base() {
         if (cams.isNotEmpty()) {
             chip(t("▦ عرض الكل", "▦ Watch all"), primary = true) { startActivity(Watch.all(this)) }
             if (cams.size > 1) chip(t("⟳ جولة", "⟳ Tour")) { startActivity(Watch.tour(this)) }
+            if (cams.any { it.brand == Brand.HIKVISION }) chip(t("🔔 الأحداث", "🔔 Events")) { startActivity(Intent(this, EventsActivity::class.java)) }
         } else {
             // receiving from the phone is the easy way on a TV; once there are cameras it stays in Settings
             chip(t("⇩ استقبال الكاميرات من الجوال", "⇩ Receive cameras from the phone"), primary = true) { receive() }
@@ -382,18 +392,18 @@ class MainActivity : Base() {
     }
 
     private fun menu(cam: Camera) {
-        val items = arrayListOf(t("مشاهدة", "Watch"), t("تعديل", "Edit"))
-        val canPin = Build.VERSION.SDK_INT >= 26 && !tv
-        if (canPin) items.add(t("اختصار على الشاشة الرئيسية", "Shortcut on the home screen"))
+        // each item with its action, so the list can change by camera (recordings / events only for Hikvision)
+        val items = ArrayList<Pair<String, () -> Unit>>()
+        items.add(t("مشاهدة", "Watch") to { startActivity(Watch.one(this, cam.id)) })
+        if (cam.brand == Brand.HIKVISION) {
+            items.add(t("التسجيلات", "Recordings") to { startActivity(Intent(this, PlaybackActivity::class.java).putExtra("id", cam.id)) })
+            items.add(t("الأحداث", "Events") to { startActivity(Intent(this, EventsActivity::class.java).putExtra("id", cam.id)) })
+        }
+        items.add(t("تعديل", "Edit") to { startActivity(Intent(this, EditActivity::class.java).putExtra("id", cam.id)) })
+        if (Build.VERSION.SDK_INT >= 26 && !tv) items.add(t("اختصار على الشاشة الرئيسية", "Shortcut on the home screen") to { pinShortcut(cam) })
         AlertDialog.Builder(this)
             .setTitle(cam.name)
-            .setItems(items.toTypedArray()) { _, which ->
-                when (which) {
-                    0 -> startActivity(Watch.one(this, cam.id))
-                    1 -> startActivity(Intent(this, EditActivity::class.java).putExtra("id", cam.id))
-                    2 -> pinShortcut(cam)
-                }
-            }
+            .setItems(items.map { it.first }.toTypedArray()) { _, which -> items[which].second() }
             .show()
     }
 

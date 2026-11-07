@@ -47,13 +47,18 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 /**
- * Motion alerts. A service keeps listening to the cameras that have «تنبيه الحركة» switched on (ONVIF events);
- * on motion, inside the alert hours, at most once a minute per camera:
- *  - phone: a notification with a picture from the camera; tapping it opens that camera;
+ * Motion alerts. A service keeps listening to the cameras that have «تنبيه الحركة» switched on: Hikvision through its
+ * own alert stream (ISAPI, one connection per recorder for all its channels: person / vehicle / motion / line
+ * crossing), the other makes through ONVIF events. Only the kinds the camera's choice asks for (Camera.alertWhat);
+ * inside the alert hours, at most once a minute per camera:
+ *  - phone: a notification («شخص عند «الحوش»») with a picture from the camera; tapping it opens that camera;
  *  - TV: the camera appears in a corner over any app (YouTube…) for 30 seconds, without taking the remote.
+ * At home the cameras' home address is used, away their outside address (Route).
  */
 object Alerts {
     private val main = Handler(Looper.getMainLooper())
+    private const val TARGETS_KEY = "alertTargets"
+    private var targets: MutableSet<String>? = null
 
     /** The last TV pop-up: camera id and when it appeared (System.currentTimeMillis()); the home screen may open that camera. */
     @Volatile var lastPop: Pair<String, Long>? = null
@@ -105,6 +110,43 @@ object Alerts {
             (if (cam.brand == Brand.CUSTOM) cam.onvifPort > 0 else cam.brand.onvif)
     }
 
+    /**
+     * Does an event of this kind pass the camera's choice? "any" = every detection; "human" / "vehicle" /
+     * "humanVehicle" = only those. A plain motion (or a line crossing / intrusion that does not say what crossed)
+     * passes them too while that device has never told a person or a vehicle apart: an older recorder still alerts.
+     */
+    internal fun wanted(c: Context, cam: Camera, kind: String): Boolean {
+        val what = cam.alertWhat
+        return when (kind) {
+            "human" -> what != "vehicle"
+            "vehicle" -> what != "human"
+            "motion", "line", "intrusion" ->
+                (what != "human" && what != "vehicle" && what != "humanVehicle") || !toldApart(c, cam)
+            else -> false
+        }
+    }
+
+    /** This device reported a person or a vehicle: remembered (also after a restart) for [wanted]. */
+    @Synchronized
+    internal fun sawTarget(c: Context, cam: Camera) {
+        val set = targetSet(c)
+        if (set.add(deviceId(cam))) {
+            try {
+                Prefs.put(c, TARGETS_KEY, set.joinToString("\n"))
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    @Synchronized
+    private fun toldApart(c: Context, cam: Camera): Boolean = deviceId(cam) in targetSet(c)
+
+    private fun targetSet(c: Context): MutableSet<String> =
+        targets ?: HashSet(Prefs.str(c, TARGETS_KEY).split('\n').filter { it.isNotBlank() }).also { targets = it }
+
+    /** A recorder / camera by make, home address and web port (no password). */
+    private fun deviceId(cam: Camera): String = cam.brand.key + "|" + cam.address().lowercase(Locale.US) + ":" + cam.httpPort()
+
     /** Inside the alert hours [from, to) (minutes after midnight; from == to = all day; 22:00 → 06:00 crosses midnight). */
     internal fun inHours(c: Context, now: Calendar = Calendar.getInstance()): Boolean {
         val from = Prefs.alertFrom(c)
@@ -115,7 +157,7 @@ object Alerts {
     }
 }
 
-/** Keeps listening to the cameras for motion (one thread per camera) while alerts are on. */
+/** Keeps listening to the cameras for motion (one thread per recorder / camera) while alerts are on. */
 class AlertService : Service() {
     companion object {
         @Volatile var instance: AlertService? = null
@@ -149,16 +191,22 @@ class AlertService : Service() {
     private var popStatus: TextView? = null
     private var popPlayer: ExoPlayer? = null
     private var popSince = 0L
+    private var popRemote = false // the pop-up plays the camera's outside address (Route)
     private val hideTick = Runnable { tick() }
     private val retryPlay = Runnable { play() }
     private val popListener = object : Player.Listener {
         override fun onPlaybackStateChanged(state: Int) {
-            if (state == Player.STATE_READY) popStatus?.visibility = View.GONE
+            if (state == Player.STATE_READY) {
+                popStatus?.visibility = View.GONE
+                popCam?.let { Route.worked(it, popRemote) }
+            }
         }
 
         override fun onPlayerError(error: PlaybackException) {
             popStatus?.text = L.t(this@AlertService, "تعذّر عرض الكاميرا، إعادة المحاولة…", "Could not show the camera, retrying…")
             popStatus?.visibility = View.VISIBLE
+            // the other address (home / outside) next time
+            if (popCam?.hasRemote() == true) popRemote = !popRemote
             main.removeCallbacks(retryPlay)
             main.postDelayed(retryPlay, 5000)
         }
@@ -225,15 +273,40 @@ class AlertService : Service() {
         watching = sig
         foreground(cams.size)
         val g = generation.incrementAndGet() // the old listeners see the change and end by themselves
+        val stop = { destroyed || generation.get() != g }
         val ids = cams.map { it.id }.toSet()
         moving.keys.retainAll(ids)
         lastAlert.keys.retainAll(ids)
+        // Hikvision: one alert stream per recorder serves all its channels (ISAPI)
+        val recorders = ArrayList<MutableList<Camera>>()
         for (cam in cams) {
+            if (cam.brand != Brand.HIKVISION) continue
+            val same = recorders.firstOrNull { it[0].sameDevice(cam) }
+            if (same != null) same.add(cam) else recorders.add(mutableListOf(cam))
+        }
+        for (group in recorders) {
+            thread(isDaemon = true, name = "ipcam-hik-alerts") {
+                Hik.watch(group, stop) { ch, kind ->
+                    if (!stop()) {
+                        for (cam in group) {
+                            if (cam.channel != ch) continue
+                            try {
+                                event(cam, true, kind, true)
+                            } catch (_: Throwable) {
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // the other makes: ONVIF events, one listener per camera
+        for (cam in cams) {
+            if (cam.brand == Brand.HIKVISION) continue
             thread(isDaemon = true, name = "ipcam-motion") {
-                Onvif.watchMotion(cam, { destroyed || generation.get() != g }) { on ->
-                    if (!destroyed && generation.get() == g) {
+                Onvif.watchEvents(cam, stop) { on, kind ->
+                    if (!stop()) {
                         try {
-                            motion(cam, on)
+                            event(cam, on, kind, false)
                         } catch (_: Throwable) {
                         }
                     }
@@ -312,32 +385,67 @@ class AlertService : Service() {
 
     // ---------------------------------------------------------------- motion (called on the camera's thread)
 
-    private fun motion(cam: Camera, on: Boolean) {
-        moving[cam.id] = on
-        if (!on) return
-        // the same camera already on the TV: it stays while the motion goes on
-        if (tv) main.post { if (pop != null && popCam?.id == cam.id) keepPop() }
+    /**
+     * One event of a camera: [on] = it starts (false = it ended, ONVIF only), [kind] = human, vehicle, motion, line,
+     * intrusion, other. [pulse] = Hikvision repeats "active" every second while it lasts and never says "ended".
+     */
+    private fun event(cam: Camera, on: Boolean, kind: String, pulse: Boolean) {
+        if (on && (kind == "human" || kind == "vehicle")) Alerts.sawTarget(this, cam)
+        if (!Alerts.wanted(this, cam, kind)) return
+        if (!on) {
+            moving[cam.id] = false
+            return
+        }
+        if (!pulse) moving[cam.id] = true
+        motion(cam, kind)
+    }
+
+    private fun motion(cam: Camera, kind: String) {
+        // the same camera already on the TV: it stays while the motion goes on (at most 2 minutes)
+        if (tv) {
+            main.post {
+                if (pop != null && popCam?.id == cam.id && SystemClock.elapsedRealtime() - popSince < LONGEST_MS) keepPop()
+            }
+        }
         if (!Alerts.inHours(this)) return
         val now = SystemClock.elapsedRealtime()
         val last = lastAlert[cam.id]
         if (last != null && now - last < COOLDOWN_MS) return
         lastAlert[cam.id] = now
         if (tv) {
-            if (cam.popTv && Alerts.canOverlay(this)) main.post { showPop(cam) }
+            if (cam.popTv && Alerts.canOverlay(this)) main.post { showPop(cam, kind) }
         } else {
             try {
                 wake?.acquire(30_000L)
             } catch (_: Throwable) {
             }
-            notifyPhone(cam)
+            notifyPhone(cam, kind)
         }
     }
 
     private fun name(cam: Camera): String = cam.name.ifBlank { cam.where() }
 
+    /** «شخص عند «الحوش»» / "Person at “Yard”", by kind. */
+    private fun title(kind: String, n: String): String = when (kind) {
+        "human" -> L.t(this, "شخص عند «$n»", "Person at “$n”")
+        "vehicle" -> L.t(this, "سيارة عند «$n»", "Vehicle at “$n”")
+        "line" -> L.t(this, "عبور خط عند «$n»", "Line crossed at “$n”")
+        "intrusion" -> L.t(this, "تسلّل عند «$n»", "Intrusion at “$n”")
+        else -> L.t(this, "حركة عند «$n»", "Motion at “$n”")
+    }
+
+    /** The word on the TV pop-up's red badge. */
+    private fun badgeText(kind: String): String = when (kind) {
+        "human" -> L.t(this, "شخص", "Person")
+        "vehicle" -> L.t(this, "سيارة", "Vehicle")
+        "line" -> L.t(this, "عبور خط", "Line crossed")
+        "intrusion" -> L.t(this, "تسلّل", "Intrusion")
+        else -> L.t(this, "حركة", "Motion")
+    }
+
     // ---------------------------------------------------------------- phone: notification with a picture
 
-    private fun notifyPhone(cam: Camera) {
+    private fun notifyPhone(cam: Camera, kind: String) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val id = 5000 + (cam.id.hashCode() and 0xFFF)
         val at = System.currentTimeMillis()
@@ -346,16 +454,24 @@ class AlertService : Service() {
             nm.cancel(id)
         } catch (_: Throwable) {
         }
-        postAlert(nm, id, cam, at, null)
+        postAlert(nm, id, cam, at, kind, null)
         // the picture follows a moment later: the alert itself does not wait for the camera
         thread(isDaemon = true, name = "ipcam-snapshot") {
             val pic = try {
-                Onvif.snapshot(cam)
+                picture(cam)
             } catch (_: Throwable) {
                 null
             }
-            if (pic != null && !destroyed && stillShown(nm, id)) postAlert(nm, id, cam, at, pic)
+            if (pic != null && !destroyed && stillShown(nm, id)) postAlert(nm, id, cam, at, kind, pic)
         }
+    }
+
+    /** Hikvision: the channel's own picture (ISAPI) first, then ONVIF (unless that would be the same refused password). */
+    private fun picture(cam: Camera): Bitmap? {
+        if (cam.brand != Brand.HIKVISION) return Onvif.snapshot(cam)
+        Hik.snapshot(cam)?.let { return it }
+        if (Hik.refused(cam) && cam.onvifUser.isEmpty()) return null
+        return Onvif.snapshot(cam)
     }
 
     private fun stillShown(nm: NotificationManager, id: Int): Boolean = try {
@@ -364,14 +480,14 @@ class AlertService : Service() {
         true
     }
 
-    private fun postAlert(nm: NotificationManager, id: Int, cam: Camera, at: Long, pic: Bitmap?) {
+    private fun postAlert(nm: NotificationManager, id: Int, cam: Camera, at: Long, kind: String, pic: Bitmap?) {
         try {
             val open = PendingIntent.getActivity(
                 this, id,
                 Watch.one(this, cam.id).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-            val b = motionBuilder(nm, cam, at)
+            val b = motionBuilder(nm, cam, at, kind)
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(pic != null) // adding the picture does not ring a second time
                 .setContentIntent(open)
@@ -382,7 +498,7 @@ class AlertService : Service() {
             if (Lock.enabled(this)) {
                 // the app is locked with a PIN: a locked phone shows only the words, never the picture
                 b.setVisibility(Notification.VISIBILITY_PRIVATE)
-                b.setPublicVersion(motionBuilder(nm, cam, at).build())
+                b.setPublicVersion(motionBuilder(nm, cam, at, kind).build())
             }
             nm.notify(id, b.build())
         } catch (_: SecurityException) {
@@ -391,8 +507,8 @@ class AlertService : Service() {
         }
     }
 
-    /** «حركة عند «الحوش»» and the time, without a picture. */
-    private fun motionBuilder(nm: NotificationManager, cam: Camera, at: Long): Notification.Builder {
+    /** «حركة عند «الحوش»» (or شخص / سيارة / عبور خط …) and the time, without a picture. */
+    private fun motionBuilder(nm: NotificationManager, cam: Camera, at: Long, kind: String): Notification.Builder {
         val b = if (Build.VERSION.SDK_INT >= 26) {
             nm.createNotificationChannel(
                 NotificationChannel(CH_MOTION, L.t(this, "تنبيه الحركة", "Motion alert"), NotificationManager.IMPORTANCE_HIGH),
@@ -401,9 +517,8 @@ class AlertService : Service() {
         } else {
             @Suppress("DEPRECATION") Notification.Builder(this).setPriority(Notification.PRIORITY_HIGH).setDefaults(Notification.DEFAULT_ALL)
         }
-        val n = name(cam)
         return b.setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setContentTitle(L.t(this, "حركة عند «$n»", "Motion at “$n”"))
+            .setContentTitle(title(kind, name(cam)))
             .setContentText(clock(at))
             .setWhen(at)
             .setShowWhen(true)
@@ -419,7 +534,7 @@ class AlertService : Service() {
 
     // ---------------------------------------------------------------- TV: the camera over other apps
 
-    private fun showPop(cam: Camera) {
+    private fun showPop(cam: Camera, kind: String) {
         if (destroyed || stopping) return
         if (Lock.started > 0) return // the app itself is on the screen: no pop-up over it
         if (pop != null && popCam?.id == cam.id) {
@@ -468,7 +583,7 @@ class AlertService : Service() {
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START,
         ).also { it.setMargins(gap, gap, gap, gap) })
 
-        val badge = Ui.text(ctx, L.t(this, "حركة", "Motion"), 13f, Ui.BG, true)
+        val badge = Ui.text(ctx, badgeText(kind), 13f, Ui.BG, true)
         badge.setPadding(gap, gap / 2, gap, gap / 2)
         badge.background = Ui.round(Ui.RED, gap.toFloat())
         root.addView(badge, FrameLayout.LayoutParams(
@@ -497,8 +612,7 @@ class AlertService : Service() {
         Alerts.lastPop = Pair(cam.id, System.currentTimeMillis())
         try {
             // TalkBack says it too: the pop-up never takes the focus
-            val n = name(cam)
-            root.announceForAccessibility(L.t(this, "حركة عند «$n»", "Motion at “$n”"))
+            root.announceForAccessibility(title(kind, name(cam)))
         } catch (_: Throwable) {
         }
         pop = root
@@ -506,6 +620,7 @@ class AlertService : Service() {
         popVideo = video
         popStatus = status
         popSince = SystemClock.elapsedRealtime()
+        popRemote = Route.preferRemote(cam)
         play()
         keepPop()
     }
@@ -516,7 +631,7 @@ class AlertService : Service() {
         val cam = popCam ?: return
         val video = popVideo ?: return
         releasePlayer()
-        val url = cam.rtsp(false)
+        val url = cam.rtsp(false, popRemote)
         if (!url.startsWith("rtsp://", ignoreCase = true)) {
             popStatus?.text = L.t(this, "رابط البث غير صحيح", "The stream link is not valid")
             popStatus?.visibility = View.VISIBLE

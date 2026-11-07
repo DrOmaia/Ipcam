@@ -37,7 +37,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - with Watch.ID: that camera alone, full quality; ‹ › go through the others; Back closes.
  *  - Watch.GROUP: only the cameras of that group. Watch.TOUR: one camera after the other by itself.
  * One camera alone has a bar: back, previous / next, sound, photo, recording, quality, moving the camera (PTZ),
- * talking (phone cameras), mini window (phone), tour, edit. On a TV the bar is hidden until OK / Menu, and the remote
+ * talking (phone cameras), mini window (phone), tour, recordings and events (Hikvision), edit. The grid's bar has
+ * the events too when a camera is Hikvision. On a TV the bar is hidden until OK / Menu, and the remote
  * does the rest: ◄ ► next / previous, 1–9 camera N, 0 the grid; in the grid ◄ ► at the edge turn the page.
  * The videos play only while the screen is in front (or in the mini window): released in onStop.
  */
@@ -103,6 +104,9 @@ class WatchActivity : Base() {
     private lateinit var ptzBtn: TextView
     private lateinit var talkBtn: TextView
     private lateinit var tourBtn: TextView
+    private lateinit var recordsBtn: TextView // Hikvision: «التسجيلات»
+    private lateinit var eventsBtn: TextView  // Hikvision: «الأحداث»
+    private lateinit var gridEvents: TextView // grid: «الأحداث» when a camera is Hikvision
     private lateinit var badge: TextView    // «جولة»
     private lateinit var recText: TextView  // «● 0:12»
     private lateinit var hint: TextView     // TV, first time
@@ -313,6 +317,8 @@ class WatchActivity : Base() {
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL or Gravity.END
+        gridEvents = small(t("🔔 الأحداث", "🔔 Events"), t("أحداث الكاميرات", "Camera events")) { openEvents(null) }
+        row.addView(gridEvents)
         gridTour = small(t("⟳ جولة", "⟳ Tour")) { startTour() }
         row.addView(gridTour)
         gridPrev = arrow("‹", t("الصفحة السابقة", "Previous page")) { goPage(-1) }
@@ -397,6 +403,11 @@ class WatchActivity : Base() {
         row.addView(pipBtn)
         tourBtn = small(tourLabel()) { if (touring) stopTour() else startTour() }
         row.addView(tourBtn)
+        // Hikvision camera / recorder channel: its recordings (timeline) and its events
+        recordsBtn = small(t("⏪ التسجيلات", "⏪ Recordings"), t("تسجيلات هذه الكاميرا", "This camera's recordings")) { openRecordings() }
+        row.addView(recordsBtn)
+        eventsBtn = small(t("🔔 الأحداث", "🔔 Events"), t("أحداث هذه الكاميرا", "This camera's events")) { cur()?.let { openEvents(it.id) } }
+        row.addView(eventsBtn)
         row.addView(small(t("✎ تعديل", "✎ Edit"), t("تعديل هذه الكاميرا", "Edit this camera")) { editCam() })
         scroll.addView(row, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
         b.addView(scroll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -609,6 +620,9 @@ class WatchActivity : Base() {
         pipBtn.visibility = if (pipOk) View.VISIBLE else View.GONE
         ptzBtn.visibility = if (cam.ptz) View.VISIBLE else View.GONE
         talkBtn.visibility = if (cam.brand == Brand.PHONE) View.VISIBLE else View.GONE
+        val hik = if (cam.brand == Brand.HIKVISION) View.VISIBLE else View.GONE
+        recordsBtn.visibility = hik
+        eventsBtn.visibility = hik
         qualityBtn.text = qualityLabel()
         soundBtn.text = soundLabel()
         soundBtn.contentDescription = soundDesc()
@@ -627,6 +641,7 @@ class WatchActivity : Base() {
         pageText.visibility = if (many) View.VISIBLE else View.GONE
         pageText.text = "${page + 1} / ${pages()}"
         gridTour.visibility = if (cams.size > 1) View.VISIBLE else View.GONE
+        gridEvents.visibility = if (cams.any { it.brand == Brand.HIKVISION }) View.VISIBLE else View.GONE
     }
 
     private fun releaseAll() {
@@ -815,6 +830,28 @@ class WatchActivity : Base() {
         try {
             // NO_USER_ACTION: opening it is not "leaving", so no jump to the mini window
             startActivity(Intent(this, EditActivity::class.java).putExtra("id", cam.id).addFlags(Intent.FLAG_ACTIVITY_NO_USER_ACTION))
+        } catch (_: Exception) {
+            opening = false
+        }
+    }
+
+    // ⏪: the recordings of this camera; «مباشر» there comes back here
+    private fun openRecordings() {
+        val cam = cur() ?: return
+        openScreen(PlaybackActivity.intent(this, cam.id, fromLive = true))
+    }
+
+    // 🔔: the events of this camera (id), or of the cameras shown in the grid (its group, or all)
+    private fun openEvents(id: String?) {
+        openScreen(if (id != null) EventsActivity.intent(this, id = id) else EventsActivity.intent(this, group = group))
+    }
+
+    // another screen of the app over this one: not "leaving", so no jump to the mini window
+    private fun openScreen(i: Intent) {
+        stopTour()
+        opening = true
+        try {
+            startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NO_USER_ACTION))
         } catch (_: Exception) {
             opening = false
         }

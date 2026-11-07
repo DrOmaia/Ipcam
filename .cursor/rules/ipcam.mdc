@@ -38,6 +38,10 @@ screen; Arabic right to left). Night colours (navy + gold, like prayer-tv).
   app for 30 s; alert hours (all day / night / custom).
 - **Phone as a camera**: an old phone becomes an RTSP camera (built-in server, port 8554) that the other devices find;
   viewers can talk through it.
+- **Hikvision recorders (DVR / NVR)**: add all channels at once with their names (ISAPI), **recordings** (day timeline,
+  play from any time), **events** list (person / vehicle / motion / line), alerts by type (`Camera.alertWhat`, AcuSense).
+- **Watching from outside the home** (e.g. the owner's recorder in Irbid): per camera an outside address
+  (`remoteHost/remotePort/remoteHttp`); `Route` tries the local address first on the camera's own network, else the outside one.
 - Optional **PIN lock**. **Updates** from Settings: shows this version, the newest and the stable one.
 User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md`.
 
@@ -54,7 +58,9 @@ User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md
 | `SettingsActivity.kt` | Language, opening, tour, motion alerts + hours + permissions, PIN, moving cameras, phone camera, updates. |
 | `LockActivity.kt` | PIN pad (also choosing a PIN). |
 | `Transfer.kt`, `TransferActivity.kt` | Send / receive cameras on the same Wi-Fi (NSD `_ipcamshare._tcp`, code). |
-| `Onvif.kt`, `Alerts.kt` | ONVIF client (PTZ, snapshot, events); alert service, TV pop-up, boot receiver. |
+| `Onvif.kt`, `Alerts.kt` | ONVIF client (PTZ, snapshot, events); alert service (alerts by type), TV pop-up, boot receiver. |
+| `Hik.kt` | Hikvision ISAPI: device name, channels, recordings search, events search, alert stream, recorder clock. |
+| `PlaybackActivity.kt`, `EventsActivity.kt` | Recordings (24 h timeline) and events list of Hikvision recorders. |
 | `CameraModeActivity.kt`, `CameraService.kt`, `RtspServer.kt`, `PhoneCams.kt`, `Talk.kt` | Phone as a camera + talk. |
 | `CamWidget.kt`, `res/layout/widget_cams.xml` | Home-screen widget. |
 | `Update.kt` | Newest / stable version from GitHub, download and install. |
@@ -66,7 +72,8 @@ User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md
 
 RTSP links (`Camera.rtsp`): Hikvision `/Streaming/Channels/{ch}01` (main) and `{ch}02` (sub);
 Dahua `/cam/realmonitor?channel={ch}&subtype=0|1`; Tapo `/stream1` and `/stream2`; IP Webcam `:8080/h264_ulaw.sdp`;
-phone camera `:8554/live` and `/low` (user `ipcam`). User and password are URL-encoded.
+phone camera `:8554/live` and `/low` (user `ipcam`); Hikvision playback `/Streaming/tracks/{ch}01?starttime=yyyyMMddTHHmmssZ`
+(recorder wall clock). User and password are URL-encoded.
 
 ## 4. Hard rules (do not break the app)
 1. **No new libraries, build steps or servers** beyond Media3 (already used). Plain Kotlin, screens built in code

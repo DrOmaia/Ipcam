@@ -5,6 +5,7 @@ import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 // The supported camera makes and how each one names its RTSP streams
 enum class Brand(val key: String, val ar: String, val en: String, val port: Int, val onvifPort: Int) {
@@ -42,12 +43,19 @@ class Camera(
     var onvifPass: String = "",
     var alert: Boolean = false, // motion alerts for this camera
     var popTv: Boolean = true,  // on a TV: show this camera over other apps when it sees motion
+    var remoteHost: String = "", // from outside the home: DDNS name, public IP or VPN (Tailscale) address; "" = none
+    var remotePort: Int = 0,     // RTSP port from outside (0 = same as port)
+    var remoteHttp: Int = 0,     // HTTP port from outside, for ISAPI / ONVIF (0 = same as httpPort())
+    var alertWhat: String = "any", // which motion alerts: "any", "human", "vehicle", "humanVehicle"
 ) {
-    /** main = full quality (one camera on screen); sub = light stream (several cameras on screen). */
-    fun rtsp(main: Boolean): String {
-        if (brand == Brand.CUSTOM) return url.trim()
+    /** main = full quality (one camera on screen); sub = light stream (several cameras on screen).
+     *  remote = through the address from outside the home (Route decides which one to try first). */
+    fun rtsp(main: Boolean, remote: Boolean = false): String {
+        if (brand == Brand.CUSTOM) return if (remote && hasRemote()) swapHost(url.trim()) else url.trim()
         val auth = if (user.isEmpty()) "" else Uri.encode(user) + ":" + Uri.encode(pass) + "@"
-        val base = "rtsp://$auth${host.trim()}:$port"
+        val h = if (remote && hasRemote()) remoteHost.trim() else host.trim()
+        val pt = if (remote && hasRemote() && remotePort > 0) remotePort else port
+        val base = "rtsp://$auth$h:$pt"
         return when (brand) {
             // channel 1 → 101 (main) / 102 (sub); on a recorder (NVR) channel 5 → 501 / 502
             Brand.HIKVISION -> "$base/Streaming/Channels/${channel}0${if (main) 1 else 2}"
@@ -56,6 +64,36 @@ class Camera(
             Brand.IPWEBCAM -> "$base/h264_ulaw.sdp"
             Brand.PHONE -> "$base/${if (main) "live" else "low"}"
             Brand.CUSTOM -> url.trim()
+        }
+    }
+
+    /** Recorded video of this channel (Hikvision) from [startLocal] = "yyyyMMdd'T'HHmmss'Z'" in the recorder's own clock. */
+    fun playback(startLocal: String, remote: Boolean = false): String {
+        val auth = if (user.isEmpty()) "" else Uri.encode(user) + ":" + Uri.encode(pass) + "@"
+        val h = if (remote && hasRemote()) remoteHost.trim() else host.trim()
+        val pt = if (remote && hasRemote() && remotePort > 0) remotePort else port
+        return "rtsp://$auth$h:$pt/Streaming/tracks/${channel}01?starttime=$startLocal"
+    }
+
+    fun hasRemote(): Boolean = remoteHost.isNotBlank()
+
+    /** HTTP port of the camera / recorder (ISAPI and ONVIF). */
+    fun httpPort(): Int = onvifPortOrDefault()
+
+    /** Same camera on the same recorder (same address and login): channels of one DVR / NVR. */
+    fun sameDevice(o: Camera): Boolean =
+        brand == o.brand && address().equals(o.address(), true) && port == o.port && user == o.user && pass == o.pass
+
+    // a CUSTOM rtsp:// link with the outside address and port instead of the home one
+    private fun swapHost(u: String): String {
+        return try {
+            val p = Uri.parse(u)
+            val hostPart = p.host ?: return u
+            val newPort = if (remotePort > 0) remotePort else p.port
+            u.replaceFirst(Regex("@?" + Regex.escape(hostPart) + "(:\\d+)?"),
+                (if (u.contains("@")) "@" else "") + remoteHost.trim() + (if (newPort > 0) ":$newPort" else ""))
+        } catch (_: Exception) {
+            u
         }
     }
 
@@ -82,6 +120,7 @@ class Camera(
         .put("user", user).put("pass", pass).put("channel", channel).put("url", url)
         .put("group", group).put("ptz", ptz).put("onvifPort", onvifPort).put("onvifUser", onvifUser)
         .put("onvifPass", onvifPass).put("alert", alert).put("popTv", popTv)
+        .put("remoteHost", remoteHost).put("remotePort", remotePort).put("remoteHttp", remoteHttp).put("alertWhat", alertWhat)
 
     companion object {
         fun fromJson(o: JSONObject) = Camera(
@@ -101,7 +140,47 @@ class Camera(
             onvifPass = o.optString("onvifPass"),
             alert = o.optBoolean("alert", false),
             popTv = o.optBoolean("popTv", true),
+            remoteHost = o.optString("remoteHost"),
+            remotePort = o.optInt("remotePort", 0),
+            remoteHttp = o.optInt("remoteHttp", 0),
+            alertWhat = o.optString("alertWhat", "any").ifEmpty { "any" },
         )
+    }
+}
+
+// Which address to use for a camera: at home its local address, away the outside one (remoteHost).
+// The local one is tried first when this device is on the same network as the camera; whichever works is remembered.
+object Route {
+    class Target(val host: String, val rtspPort: Int, val httpPort: Int, val remote: Boolean)
+
+    private val lastRemote = ConcurrentHashMap<String, Boolean>()
+
+    /** Addresses to try, in order (one when there is no outside address). */
+    fun targets(cam: Camera): List<Target> {
+        val local = Target(cam.address(), cam.rtspPort(), cam.httpPort(), false)
+        if (!cam.hasRemote()) return listOf(local)
+        val remote = Target(cam.remoteHost.trim(), if (cam.remotePort > 0) cam.remotePort else cam.rtspPort(),
+            if (cam.remoteHttp > 0) cam.remoteHttp else cam.httpPort(), true)
+        val remoteFirst = lastRemote[cam.id] ?: !sameNetwork(cam.address())
+        return if (remoteFirst) listOf(remote, local) else listOf(local, remote)
+    }
+
+    /** Start with the outside address? */
+    fun preferRemote(cam: Camera): Boolean = cam.hasRemote() && targets(cam).first().remote
+
+    /** Remember which address answered for this camera. */
+    fun worked(cam: Camera, remote: Boolean) {
+        if (cam.hasRemote()) lastRemote[cam.id] = remote
+    }
+
+    // a private address (192.168.x / 10.x / 172.16–31.x) on the same /24 as this device = at home with the camera
+    private fun sameNetwork(host: String): Boolean {
+        val me = Discovery.localIPv4() ?: return false
+        val parts = host.trim().split('.')
+        // a name for the home address (no lookup here: this can run on the main thread): try it first
+        if (parts.size != 4 || parts.any { it.toIntOrNull() == null }) return true
+        val mine = me.hostAddress?.split('.') ?: return false
+        return mine.size == 4 && mine[0] == parts[0] && mine[1] == parts[1] && mine[2] == parts[2]
     }
 }
 

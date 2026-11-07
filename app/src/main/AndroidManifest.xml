@@ -84,6 +84,14 @@
             android:supportsPictureInPicture="true"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
 
+        <!-- recordings of a Hikvision recorder (timeline) and its events (person / vehicle / motion) -->
+        <activity
+            android:name=".PlaybackActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|navigation"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
+        <activity android:name=".EventsActivity" />
+
         <!-- phone as a camera -->
         <activity
             android:name=".CameraModeActivity"
