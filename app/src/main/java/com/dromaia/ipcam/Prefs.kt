@@ -16,9 +16,12 @@ object Prefs {
     fun str(c: Context, key: String, def: String = ""): String = sp(c).getString(key, def) ?: def
     fun bool(c: Context, key: String, def: Boolean): Boolean = sp(c).getBoolean(key, def)
     fun int(c: Context, key: String, def: Int): Int = sp(c).getInt(key, def)
+    fun long(c: Context, key: String, def: Long): Long = sp(c).getLong(key, def)
     fun put(c: Context, key: String, v: String) = sp(c).edit().putString(key, v).apply()
     fun put(c: Context, key: String, v: Boolean) = sp(c).edit().putBoolean(key, v).apply()
     fun put(c: Context, key: String, v: Int) = sp(c).edit().putInt(key, v).apply()
+    // a separate name (not put) so that put(c, key, 0) stays an Int
+    fun putLong(c: Context, key: String, v: Long) = sp(c).edit().putLong(key, v).apply()
 
     /** "ar" (default) or "en". */
     fun lang(c: Context) = str(c, "lang", "ar")
@@ -38,6 +41,13 @@ object Prefs {
 
     /** SHA-256 of the app PIN, or "" when the lock is off. */
     fun pinHash(c: Context) = str(c, "pinHash", "")
+
+    /** Wrong PINs in a row (kept after the app closes), and until when (clock time, ms) no PIN is accepted. */
+    fun pinWrong(c: Context) = int(c, "pinWrong", 0)
+    fun pinWait(c: Context) = long(c, "pinWait", 0L)
+
+    /** Download id of an update being downloaded (-1 = none). */
+    fun updId(c: Context) = long(c, "updId", -1L)
 }
 
 // Arabic / English: every text in the app is written as L.t(context, "عربي", "English")

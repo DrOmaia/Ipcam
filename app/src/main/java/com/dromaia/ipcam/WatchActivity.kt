@@ -2,6 +2,7 @@ package com.dromaia.ipcam
 
 import android.Manifest
 import android.app.PictureInPictureParams
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
@@ -9,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.TextUtils
 import android.util.Rational
 import android.view.Gravity
 import android.view.KeyEvent
@@ -18,6 +20,7 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.view.accessibility.AccessibilityManager
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -33,9 +36,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - without Watch.ID: the cameras four per page (light stream). Tap / OK opens one alone here; Back returns to the grid.
  *  - with Watch.ID: that camera alone, full quality; ‹ › go through the others; Back closes.
  *  - Watch.GROUP: only the cameras of that group. Watch.TOUR: one camera after the other by itself.
- * One camera alone has a bar: back, previous / next, quality, sound, photo, recording, mini window (phone),
- * turning the camera (PTZ), talking (phone cameras), tour. On a TV the bar is hidden until OK / Menu, and the remote
- * does the rest: ◄ ► next / previous, 1–9 camera N, 0 the grid.
+ * One camera alone has a bar: back, previous / next, sound, photo, recording, quality, moving the camera (PTZ),
+ * talking (phone cameras), mini window (phone), tour, edit. On a TV the bar is hidden until OK / Menu, and the remote
+ * does the rest: ◄ ► next / previous, 1–9 camera N, 0 the grid; in the grid ◄ ► at the edge turn the page.
  * The videos play only while the screen is in front (or in the mini window): released in onStop.
  */
 class WatchActivity : Base() {
@@ -63,10 +66,13 @@ class WatchActivity : Base() {
     private var pip = false
     private var stopped = true
     private var asking = false     // a permission question is open (do not go to the mini window)
+    private var opening = false    // the edit screen is being opened (do not go to the mini window)
     private var swallowKey = -1    // the rest of a key press already used (its up and repeats)
     private var swallowTouch = false
     private var heldKey = 0        // PTZ: the arrow key now held
-    private var lastPtzError = 0L
+    @Volatile private var ptzGen = 0         // changes when move mode ends: moves still waiting are then not sent
+    @Volatile private var ptzFailedGen = -1  // the move mode in which a move failed: no more moves are sent in it
+    private var talkGen = 0           // changes with every press of 🎤: a late error of an old press is ignored
     private var focusPos = -1      // grid: the tile to focus (the camera we came back from)
     private var rowsKey = ""
     private var recorder: Recorder? = null
@@ -101,12 +107,13 @@ class WatchActivity : Base() {
     private lateinit var recText: TextView  // «● 0:12»
     private lateinit var hint: TextView     // TV, first time
     private lateinit var label: TextView    // the camera's name for 3 s after changing camera
-    private lateinit var ptzHint: TextView  // TV: how to turn the camera
-    private var pad: View? = null           // phone: arrows to turn the camera
+    private lateinit var ptzHint: TextView  // TV: how to move the camera
+    private var pad: View? = null           // phone: arrows to move the camera
 
     private val hideBar = Runnable { if (talking) scheduleHide() else showBar(false) }
     private val hideHint = Runnable { if (::hint.isInitialized) hint.visibility = View.GONE }
     private val hideLabel = Runnable { if (::label.isInitialized) label.visibility = View.GONE }
+    private val nudgeStop = Runnable { stopMove() }
     private val tourRun = Runnable {
         if (touring && single && !stopped) {
             step(1)
@@ -182,7 +189,7 @@ class WatchActivity : Base() {
         ptzHint = pill(15f)
         ptzHint.text = t(
             "وضع التحريك: الأسهم تحرّك الكاميرا · CH+ / CH− للتقريب والتبعيد · رجوع للخروج",
-            "Move mode: arrows turn the camera · CH+ / CH− zoom in / out · Back to leave",
+            "Move mode: arrows move the camera · CH+ / CH− zoom in / out · Back to leave",
         )
         overlay(ptzHint, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
         badge = pill(14f, Ui.GOLD)
@@ -195,8 +202,8 @@ class WatchActivity : Base() {
         overlay(label, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 32)
         hint = pill(18f)
         hint.text = t(
-            "◄ ► للتنقل بين الكاميرات · OK للقائمة · 1–9 لكاميرا مباشرة",
-            "◄ ► switch cameras · OK for the menu · 1–9 a camera directly",
+            "◄ ► للتنقل بين الكاميرات · OK للقائمة · 1–9 لفتح كاميرا مباشرة",
+            "◄ ► switch cameras · OK for the menu · 1–9 open a camera",
         )
         overlay(hint, Gravity.CENTER)
 
@@ -219,8 +226,19 @@ class WatchActivity : Base() {
     override fun onStart() {
         super.onStart()
         stopped = false
+        opening = false
         hideSystemBars()
         if (!::grid.isInitialized) return
+        // the cameras again from the store: a change made in the edit screen (✎) shows at once, a deleted one goes
+        val shown = cams.getOrNull(index)?.id
+        val saved = Store.all(this).associateBy { it.id }
+        cams = cams.mapNotNull { saved[it.id] }
+        if (cams.isEmpty()) {
+            finish()
+            return
+        }
+        val i = cams.indexOfFirst { it.id == shown }
+        index = if (i >= 0) i else index.coerceIn(0, cams.size - 1)
         render()
         if (touring) scheduleTour()
     }
@@ -255,8 +273,16 @@ class WatchActivity : Base() {
     // turning the phone (or the mini window changing size) does not reconnect: the same videos are only placed again
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (::grid.isInitialized) layoutTiles(force = false)
+        if (::grid.isInitialized) {
+            layoutTiles(force = false)
+            fitTitle(newConfig.screenWidthDp)
+        }
         if (!pip) hideSystemBars()
+    }
+
+    // the grid's title takes at most 40% of the width
+    private fun fitTitle(screenDp: Int) {
+        if (screenDp > 0) gridTitle.maxWidth = Ui.dp(this, screenDp * 2 / 5)
     }
 
     // ---------------------------------------------------------------- building the screen
@@ -267,23 +293,38 @@ class WatchActivity : Base() {
         b.gravity = Gravity.CENTER_VERTICAL
         b.setBackgroundColor(0xB3000000.toInt())
         val p = Ui.dp(this, 8)
-        b.setPadding(p, p, p, p)
+        barPadding(b, p)
 
         b.addView(small(t("→ رجوع", "← Back")) { finish() })
         gridTitle = Ui.text(this, "", 17f, Ui.TEXT, true)
-        gridTitle.setPadding(p * 2, 0, p * 2, 0)
+        gridTitle.setPadding(p * 2, 0, p, 0)
         gridTitle.isSingleLine = true
-        b.addView(gridTitle, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        gridTitle.ellipsize = TextUtils.TruncateAt.END
+        fitTitle(resources.configuration.screenWidthDp) // a long group name gets «…» and leaves room for the buttons
+        Ui.heading(gridTitle)
+        b.addView(gridTitle, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        // tour and the pages at the end; they scroll sideways when a phone is too narrow
+        val scroll = HorizontalScrollView(this)
+        scroll.isHorizontalScrollBarEnabled = false
+        scroll.isFillViewport = true
+        scroll.isHorizontalFadingEdgeEnabled = true
+        scroll.setFadingEdgeLength(Ui.dp(this, 40))
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL or Gravity.END
         gridTour = small(t("⟳ جولة", "⟳ Tour")) { startTour() }
-        b.addView(gridTour)
-        gridPrev = small(t("‹ السابق", "‹ Previous")) { goPage(-1) }
-        b.addView(gridPrev)
+        row.addView(gridTour)
+        gridPrev = arrow("‹", t("الصفحة السابقة", "Previous page")) { goPage(-1) }
+        row.addView(gridPrev)
         pageText = Ui.text(this, "", 15f, Ui.TEXT)
         pageText.setPadding(p, 0, p, 0)
         pageText.textDirection = View.TEXT_DIRECTION_LTR
-        b.addView(pageText)
-        gridNext = small(t("التالي ›", "Next ›")) { goPage(1) }
-        b.addView(gridNext)
+        row.addView(pageText)
+        gridNext = arrow("›", t("الصفحة التالية", "Next page")) { goPage(1) }
+        row.addView(gridNext)
+        scroll.addView(row, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        b.addView(scroll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         return b
     }
 
@@ -293,39 +334,40 @@ class WatchActivity : Base() {
         b.gravity = Gravity.CENTER_VERTICAL
         b.setBackgroundColor(0xB3000000.toInt())
         val p = Ui.dp(this, 6)
-        b.setPadding(p, p, p, p)
+        barPadding(b, p)
         b.addView(small(t("→ رجوع", "← Back")) { goBack() })
 
-        // the rest scrolls sideways when the screen is narrow (the remote scrolls it by moving the focus)
+        // the rest scrolls sideways when the screen is narrow (the remote scrolls it by moving the focus);
+        // the faded edge shows that there are more buttons
         val scroll = HorizontalScrollView(this)
         scroll.isHorizontalScrollBarEnabled = false
         scroll.isFillViewport = true
+        scroll.isHorizontalFadingEdgeEnabled = true
+        scroll.setFadingEdgeLength(Ui.dp(this, 40))
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL or Gravity.START
         nameText = Ui.text(this, "", 17f, Ui.TEXT, true)
         nameText.setPadding(p * 2, 0, p * 2, 0)
         nameText.isSingleLine = true
+        Ui.heading(nameText)
         row.addView(nameText)
-        // in Arabic «previous» is to the right and points right
-        prevBtn = arrow(if (rtl) "›" else "‹", t("الكاميرا السابقة", "Previous camera")) { step(-1) }
+        prevBtn = arrow("‹", t("الكاميرا السابقة", "Previous camera")) { step(-1) }
         row.addView(prevBtn)
-        nextBtn = arrow(if (rtl) "‹" else "›", t("الكاميرا التالية", "Next camera")) { step(1) }
+        nextBtn = arrow("›", t("الكاميرا التالية", "Next camera")) { step(1) }
         row.addView(nextBtn)
-        qualityBtn = small(qualityLabel()) { toggleQuality() }
-        row.addView(qualityBtn)
-        soundBtn = small(soundLabel()) { toggleSound() }
+        soundBtn = small(soundLabel(), soundDesc()) { toggleSound() }
         row.addView(soundBtn)
         row.addView(small(t("📷 صورة", "📷 Photo"), t("حفظ صورة", "Save a photo")) { snapshot() })
         recBtn = small(recLabel()) { toggleRecord() }
         row.addView(recBtn)
-        pipBtn = small(t("⧉ نافذة صغيرة", "⧉ Mini window"), t("نافذة صغيرة فوق التطبيقات", "Small window over other apps")) { enterPip() }
-        row.addView(pipBtn)
+        qualityBtn = small(qualityLabel()) { toggleQuality() }
+        row.addView(qualityBtn)
         ptzBtn = small(ptzLabel()) { if (ptzMode) leavePtz() else enterPtz() }
         row.addView(ptzBtn)
-        talkBtn = small(talkLabel(), t("اضغط مطوّلًا للتحدّث عبر الكاميرا", "Hold to talk through the camera")) {
-            toast(t("اضغط مطوّلًا على 🎤 وتحدّث", "Hold 🎤 and speak"))
-        }
+        // a click reaches here only from TalkBack / Switch Access (touch and OK are taken by the hold listeners
+        // below): it starts talking, and the next one stops
+        talkBtn = small(talkLabel(), talkDesc()) { if (talking) talkUp() else talkDown() }
         // hold to talk: finger down / up, or OK held on the remote
         talkBtn.setOnTouchListener { v, e ->
             when (e.actionMasked) {
@@ -351,15 +393,23 @@ class WatchActivity : Base() {
             }
         }
         row.addView(talkBtn)
+        pipBtn = small(t("⧉ نافذة صغيرة", "⧉ Mini window"), t("نافذة صغيرة فوق التطبيقات", "Small window over other apps")) { enterPip() }
+        row.addView(pipBtn)
         tourBtn = small(tourLabel()) { if (touring) stopTour() else startTour() }
         row.addView(tourBtn)
+        row.addView(small(t("✎ تعديل", "✎ Edit"), t("تعديل هذه الكاميرا", "Edit this camera")) { editCam() })
         scroll.addView(row, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
         b.addView(scroll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         b.visibility = View.GONE
         return b
     }
 
-    // phone: ▲ ▼ ◄ ► and zoom over the video; held = the camera turns, released = it stops
+    // TV: the bars keep away from the screen's edges (some TVs cut them off); phone: a small padding
+    private fun barPadding(b: View, p: Int) {
+        if (tv) b.setPadding(Ui.dp(this, 48), Ui.dp(this, 20), Ui.dp(this, 48), p) else b.setPadding(p, p, p, p)
+    }
+
+    // phone: ▲ ▼ ◄ ► and zoom over the video; held = the camera moves, released = it stops
     private fun makePad(): View {
         val box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
@@ -381,10 +431,10 @@ class WatchActivity : Base() {
             return r
         }
 
-        val up = padButton("▲", t("تحريك للأعلى", "Turn up"), 0f, SPEED, 0f)
-        val down = padButton("▼", t("تحريك للأسفل", "Turn down"), 0f, -SPEED, 0f)
-        val left = padButton("◄", t("تحريك لليسار", "Turn left"), -SPEED, 0f, 0f)
-        val right = padButton("►", t("تحريك لليمين", "Turn right"), SPEED, 0f, 0f)
+        val up = padButton("▲", t("تحريك للأعلى", "Move up"), 0f, SPEED, 0f)
+        val down = padButton("▼", t("تحريك للأسفل", "Move down"), 0f, -SPEED, 0f)
+        val left = padButton("◄", t("تحريك لليسار", "Move left"), -SPEED, 0f, 0f)
+        val right = padButton("►", t("تحريك لليمين", "Move right"), SPEED, 0f, 0f)
         val zoomIn = padButton("+", t("تقريب", "Zoom in"), 0f, 0f, SPEED)
         val zoomOut = padButton("−", t("تبعيد", "Zoom out"), 0f, 0f, -SPEED)
         val close = small("✕", t("إنهاء التحريك", "Stop moving the camera")) { leavePtz() }
@@ -397,7 +447,8 @@ class WatchActivity : Base() {
     }
 
     private fun padButton(text: String, desc: String, x: Float, y: Float, z: Float): TextView {
-        val b = small(text, desc) {}
+        // a click reaches here only from TalkBack / Switch Access (touch is taken below): a short move, then stop
+        val b = small(text, desc) { nudge(x, y, z) }
         b.setOnTouchListener { v, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -430,10 +481,11 @@ class WatchActivity : Base() {
         return b
     }
 
-    // an arrow drawn as given (not mirrored by the Arabic direction)
+    // ‹ = previous, › = next. The text direction is set to the language's: in Arabic the text engine draws them
+    // mirrored, so both point outward there too (previous on the right points right, next on the left points left)
     private fun arrow(glyph: String, desc: String, onClick: () -> Unit): TextView {
         val b = small(glyph, desc, onClick)
-        b.textDirection = View.TEXT_DIRECTION_LTR
+        b.textDirection = if (rtl) View.TEXT_DIRECTION_RTL else View.TEXT_DIRECTION_LTR
         b.textSize = 20f * Ui.scale(this)
         return b
     }
@@ -451,16 +503,18 @@ class WatchActivity : Base() {
     private fun overlay(v: View, gravity: Int, marginDp: Int = 16) {
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         lp.gravity = gravity
-        val m = Ui.dp(this, marginDp)
+        val m = Ui.dp(this, if (tv) maxOf(32, marginDp) else marginDp) // TV: away from the screen's edges
         lp.setMargins(m, m, m, m)
         root.addView(v, lp)
     }
 
-    private fun qualityLabel() = if (hq) t("جودة عالية", "High quality") else t("جودة خفيفة", "Light quality")
+    private fun qualityLabel() = if (hq) t("جودة عالية", "High quality") else t("جودة خفيفة", "Low quality")
     private fun soundLabel() = if (muted) t("🔇 الصوت", "🔇 Sound") else t("🔊 الصوت", "🔊 Sound")
+    private fun soundDesc() = if (muted) t("الصوت مكتوم، اضغط للتشغيل", "Sound off, tap to turn on") else t("كتم الصوت", "Mute sound")
     private fun recLabel() = if (recorder != null) t("⏹ إيقاف التسجيل", "⏹ Stop recording") else t("⏺ تسجيل", "⏺ Record")
     private fun ptzLabel() = if (ptzMode) t("🎮 إنهاء التحريك", "🎮 Stop moving") else t("🎮 تحريك", "🎮 Move")
     private fun talkLabel() = if (talking) t("🎤 جارٍ التحدّث…", "🎤 Talking…") else t("🎤 تحدّث", "🎤 Talk")
+    private fun talkDesc() = if (talking) t("إيقاف التحدّث", "Stop talking") else t("التحدّث عبر الكاميرا", "Talk through the camera")
     private fun tourLabel() = if (touring) t("⟳ إيقاف الجولة", "⟳ Stop tour") else t("⟳ جولة", "⟳ Tour")
 
     // ---------------------------------------------------------------- showing the cameras
@@ -509,21 +563,22 @@ class WatchActivity : Base() {
         tiles.forEach { it.start() }
         badge.visibility = if (touring && !pip) View.VISIBLE else View.GONE
         if (!single) {
-            val k = if (focusPos in 0 until tiles.size) focusPos else 0
+            val k = if (focusPos >= 0) minOf(focusPos, tiles.size - 1) else 0
             focusPos = -1
             ui.post { if (!single) tiles.getOrNull(k)?.view?.requestFocus() }
         }
     }
 
-    // 1 → whole screen; 2 → side by side (landscape) or one above the other (portrait); 3–4 → 2 × 2
+    // 1 → whole screen; 2 → side by side (landscape) or one above the other (portrait);
+    // 3–4 → 2 × 2 (landscape, TV) or one column (phone upright, each picture wider)
     private fun layoutTiles(force: Boolean) {
         val views = tiles.map { it.view }
-        val land = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val wide = tv || resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val rows: List<List<View>> = when (views.size) {
             0 -> emptyList()
             1 -> listOf(views)
-            2 -> if (land) listOf(views) else views.map { listOf(it) }
-            else -> views.chunked(2)
+            2 -> if (wide) listOf(views) else views.map { listOf(it) }
+            else -> if (wide) views.chunked(2) else views.map { listOf(it) }
         }
         val key = views.size.toString() + ":" + rows.joinToString(",") { it.size.toString() }
         if (!force && key == rowsKey) return // same arrangement: the videos stay where they are
@@ -540,7 +595,7 @@ class WatchActivity : Base() {
                 row.addView(v, lp)
             }
             // a third camera alone keeps the same size as the others
-            if (r.size == 1 && views.size == 3) row.addView(View(this), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            if (wide && r.size == 1 && views.size == 3) row.addView(View(this), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
             grid.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
     }
@@ -556,9 +611,11 @@ class WatchActivity : Base() {
         talkBtn.visibility = if (cam.brand == Brand.PHONE) View.VISIBLE else View.GONE
         qualityBtn.text = qualityLabel()
         soundBtn.text = soundLabel()
+        soundBtn.contentDescription = soundDesc()
         recBtn.text = recLabel()
         ptzBtn.text = ptzLabel()
         talkBtn.text = talkLabel()
+        talkBtn.contentDescription = talkDesc()
         tourBtn.text = tourLabel()
     }
 
@@ -600,12 +657,27 @@ class WatchActivity : Base() {
         if (single && gridRoot) toGrid() else finish()
     }
 
-    private fun goPage(d: Int) {
+    /** Next (+1) / previous (−1) page of the grid; [focus] = the tile to focus there. */
+    private fun goPage(d: Int, focus: Int = 0) {
         val n = pages()
         if (n < 2) return
         page = ((page + d) % n + n) % n
-        focusPos = 0
+        focusPos = focus
         render()
+    }
+
+    // grid, remote: ◄ / ► on a camera at the edge of the page turns the page (in Arabic the next page is to the
+    // left). The focus lands on the same row, on the side it came in from. false = not at the edge.
+    private fun edgePage(code: Int): Boolean {
+        if (pages() < 2) return false
+        val f = currentFocus ?: return false
+        val pos = tiles.indexOfFirst { it.view === f }
+        if (pos < 0) return false
+        val left = code == KeyEvent.KEYCODE_DPAD_LEFT
+        if (f.focusSearch(if (left) View.FOCUS_LEFT else View.FOCUS_RIGHT) != null) return false
+        val d = if (left == rtl) 1 else -1
+        goPage(d, (pos / 2) * 2 + (if (d > 0) 0 else 1))
+        return true
     }
 
     /** Next (+1) / previous (−1) camera, alone. */
@@ -617,8 +689,14 @@ class WatchActivity : Base() {
         showLabel()
     }
 
+    // a tap on the video (or a TalkBack double tap): the tour stops first; after a wrong password it tries once more
     private fun onVideoTap() {
-        if (single) showBar(bar.visibility != View.VISIBLE)
+        if (touring) {
+            stopTour()
+            return
+        }
+        if (!single) return
+        if (tiles.firstOrNull()?.retryOnce() == true) showBar(true) else showBar(bar.visibility != View.VISIBLE)
     }
 
     private fun showBar(on: Boolean, focus: Boolean = false) {
@@ -629,23 +707,26 @@ class WatchActivity : Base() {
         ui.removeCallbacks(hideBar)
         if (show) {
             if (tv) scheduleHide()
-            if (focus) (if (prevBtn.visibility == View.VISIBLE) prevBtn else qualityBtn).requestFocus()
+            if (focus) (if (prevBtn.visibility == View.VISIBLE) prevBtn else soundBtn).requestFocus()
         }
     }
 
     private fun scheduleHide() {
         ui.removeCallbacks(hideBar)
-        if (tv) ui.postDelayed(hideBar, BAR_MS)
+        if (tv) ui.postDelayed(hideBar, timeout(BAR_MS))
     }
 
-    // the camera's name for 3 seconds, when the bar is hidden
+    // the camera's name for 3 seconds, when the bar is hidden; TalkBack says it in any case
     private fun showLabel() {
         val cam = cur() ?: return
-        if (pip || bar.visibility == View.VISIBLE) return
-        label.text = if (cams.size > 1) "${cam.name} · ${index + 1}/${cams.size}" else cam.name
+        if (pip) return
+        val text = if (cams.size > 1) "${cam.name} · ${index + 1}/${cams.size}" else cam.name
+        say(if (cams.size > 1) t("${cam.name}، ${index + 1} من ${cams.size}", "${cam.name}, ${index + 1} of ${cams.size}") else cam.name)
+        if (bar.visibility == View.VISIBLE) return
+        label.text = text
         label.visibility = View.VISIBLE
         ui.removeCallbacks(hideLabel)
-        ui.postDelayed(hideLabel, 3000)
+        ui.postDelayed(hideLabel, timeout(3000))
     }
 
     // TV, the first time only: how the remote works here
@@ -653,8 +734,27 @@ class WatchActivity : Base() {
         if (!tv || pip || Prefs.bool(this, "hintSeen", false)) return
         Prefs.put(this, "hintSeen", true)
         hint.visibility = View.VISIBLE
+        say(hint.text.toString())
         ui.removeCallbacks(hideHint)
-        ui.postDelayed(hideHint, 6000)
+        ui.postDelayed(hideHint, timeout(6000))
+    }
+
+    // how long something stays on screen: longer when the user asked Android for more time (Accessibility →
+    // Time to take action, Android 10+)
+    private fun timeout(ms: Long): Long {
+        if (Build.VERSION.SDK_INT < 29) return ms
+        return try {
+            val am = getSystemService(ACCESSIBILITY_SERVICE) as? AccessibilityManager ?: return ms
+            val flags = AccessibilityManager.FLAG_CONTENT_CONTROLS or AccessibilityManager.FLAG_CONTENT_TEXT
+            maxOf(ms, am.getRecommendedTimeoutMillis(ms.toInt(), flags).toLong())
+        } catch (_: Exception) {
+            ms
+        }
+    }
+
+    // TalkBack says this (nothing happens when TalkBack is off)
+    private fun say(text: String) {
+        if (::root.isInitialized && text.isNotEmpty()) root.announceForAccessibility(text)
     }
 
     // ---------------------------------------------------------------- buttons
@@ -672,6 +772,7 @@ class WatchActivity : Base() {
     private fun toggleSound() {
         muted = !muted
         soundBtn.text = soundLabel()
+        soundBtn.contentDescription = soundDesc()
         if (!talking) tiles.forEach { it.muted = muted }
     }
 
@@ -704,6 +805,19 @@ class WatchActivity : Base() {
     private fun scheduleTour() {
         ui.removeCallbacks(tourRun)
         ui.postDelayed(tourRun, maxOf(5, Prefs.tourSec(this)) * 1000L)
+    }
+
+    // ✎: the edit screen for this camera; back here, onStart reads the cameras again
+    private fun editCam() {
+        val cam = cur() ?: return
+        stopTour()
+        opening = true
+        try {
+            // NO_USER_ACTION: opening it is not "leaving", so no jump to the mini window
+            startActivity(Intent(this, EditActivity::class.java).putExtra("id", cam.id).addFlags(Intent.FLAG_ACTIVITY_NO_USER_ACTION))
+        } catch (_: Exception) {
+            opening = false
+        }
     }
 
     private fun noPicture() = t("لا توجد صورة بعد. انتظر حتى يظهر البث", "No picture yet. Wait for the video")
@@ -757,7 +871,7 @@ class WatchActivity : Base() {
         recText.visibility = if (pip) View.GONE else View.VISIBLE
         ui.removeCallbacks(recTick)
         ui.postDelayed(recTick, 500)
-        toast(t("بدأ التسجيل (دقيقة واحدة على الأكثر)", "Recording (one minute at most)"))
+        toast(t("بدأ التسجيل (دقيقة واحدة على الأكثر)", "Recording started (one minute at most)"))
     }
 
     private fun stopRecording() {
@@ -782,7 +896,7 @@ class WatchActivity : Base() {
         if (::recBtn.isInitialized) recBtn.text = recLabel()
     }
 
-    // ---------------------------------------------------------------- PTZ (turning the camera)
+    // ---------------------------------------------------------------- PTZ (moving the camera)
 
     private fun enterPtz() {
         val cam = cur() ?: return
@@ -793,6 +907,7 @@ class WatchActivity : Base() {
         if (tv) {
             showBar(false)
             ptzHint.visibility = View.VISIBLE
+            say(ptzHint.text.toString())
         } else {
             pad?.visibility = View.VISIBLE
         }
@@ -801,7 +916,9 @@ class WatchActivity : Base() {
     private fun leavePtz() {
         if (!ptzMode) return
         heldKey = 0
+        ui.removeCallbacks(nudgeStop)
         stopMove()
+        ptzGen++
         ptzMode = false
         ptzCam = null
         pad?.visibility = View.GONE
@@ -811,14 +928,27 @@ class WatchActivity : Base() {
 
     private fun move(x: Float, y: Float, z: Float) {
         val cam = ptzCam ?: return
+        val gen = ptzGen
         bg {
+            // move mode ended meanwhile, or a move already failed in it: not sent
+            if (gen != ptzGen || gen == ptzFailedGen) return@bg
             val ok = try {
                 Onvif.ptzMove(cam, x, y, z)
             } catch (_: Exception) {
                 false
             }
-            if (!ok) ui.post { ptzFailed() }
+            if (!ok) {
+                ptzFailedGen = gen
+                ui.post { ptzFailed(gen) }
+            }
         }
+    }
+
+    // TalkBack / Switch Access: the camera moves for 0.7 s, then stops
+    private fun nudge(x: Float, y: Float, z: Float) {
+        ui.removeCallbacks(nudgeStop)
+        move(x, y, z)
+        ui.postDelayed(nudgeStop, 700)
     }
 
     private fun stopMove() {
@@ -831,14 +961,14 @@ class WatchActivity : Base() {
         }
     }
 
-    private fun ptzFailed() {
-        val now = System.currentTimeMillis()
-        if (now - lastPtzError < 4000) return
-        lastPtzError = now
-        toast(t("تعذّر تحريك الكاميرا. تأكد من إعدادات ONVIF في الكاميرا", "Could not turn the camera. Check its ONVIF settings"))
+    // a move did not work: say so and leave move mode, so nothing more is sent to the camera
+    private fun ptzFailed(gen: Int) {
+        if (gen != ptzGen || !ptzMode) return
+        toast(t("تعذّر تحريك الكاميرا. تأكد من إعدادات ONVIF في الكاميرا", "Could not move the camera. Check its ONVIF settings"))
+        leavePtz()
     }
 
-    // TV in move mode: arrows turn the camera while held, CH+ / CH− zoom
+    // TV in move mode: arrows move the camera while held, CH+ / CH− zoom
     private fun ptzKey(e: KeyEvent): Boolean {
         val v = when (e.keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT -> floatArrayOf(-SPEED, 0f, 0f)
@@ -872,7 +1002,8 @@ class WatchActivity : Base() {
             return
         }
         talking = true
-        talkBtn.text = talkLabel()
+        val gen = ++talkGen
+        talkUi()
         tiles.forEach { it.muted = true } // do not hear our own voice back from the camera
         ui.removeCallbacks(hideBar)
         val app = applicationContext
@@ -880,9 +1011,13 @@ class WatchActivity : Base() {
         val failed = t("تعذّر التحدّث عبر هذه الكاميرا", "Could not talk through this camera")
         bg {
             val ok = try {
+                // also when it fails later (no connection, wrong password, busy): the button is back to «تحدّث»
                 Talk.start(app, cam) { msg ->
                     reported.set(true)
-                    ui.post { toast(msg) }
+                    ui.post {
+                        toast(msg)
+                        if (gen == talkGen) talkUp()
+                    }
                 }
             } catch (_: Exception) {
                 false
@@ -890,19 +1025,23 @@ class WatchActivity : Base() {
             if (!ok) {
                 ui.post {
                     if (!reported.get()) toast(failed)
-                    talkUp()
+                    if (gen == talkGen) talkUp()
                 }
             }
         }
     }
 
+    private fun talkUi() {
+        if (!::talkBtn.isInitialized) return
+        talkBtn.text = talkLabel()
+        talkBtn.contentDescription = talkDesc()
+    }
+
     private fun talkUp() {
         if (!talking) return
         talking = false
-        if (::talkBtn.isInitialized) {
-            talkBtn.text = talkLabel()
-            talkBtn.isPressed = false
-        }
+        talkUi()
+        if (::talkBtn.isInitialized) talkBtn.isPressed = false
         tiles.forEach { it.muted = muted }
         bg {
             try {
@@ -938,7 +1077,7 @@ class WatchActivity : Base() {
     // Home pressed while watching one camera: keep watching in a small window
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (::grid.isInitialized && single && pipOk && !asking && !pip && !isFinishing && !Lock.needed(this)) enterPip()
+        if (::grid.isInitialized && single && pipOk && !asking && !opening && !pip && !isFinishing && !Lock.needed(this)) enterPip()
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
@@ -952,8 +1091,8 @@ class WatchActivity : Base() {
             ui.removeCallbacks(hideBar)
             tiles.forEach { it.setZoomable(false) }
         } else {
-            if (stopped) { // the small window was closed
-                finish()
+            if (stopped) { // the small window was closed: no second entry left in the recent apps
+                finishAndRemoveTask()
                 return
             }
             if (single) {
@@ -1050,6 +1189,9 @@ class WatchActivity : Base() {
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
                     KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+                            tiles.firstOrNull()?.retryOnce() // after a wrong password: OK tries once more
+                        }
                         showBar(true, focus = true)
                         return used(code)
                     }
@@ -1067,6 +1209,9 @@ class WatchActivity : Base() {
                 KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
                     goPage(-1)
                     return used(code)
+                }
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (edgePage(code)) return used(code)
                 }
             }
         }

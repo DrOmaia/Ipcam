@@ -21,6 +21,7 @@ class ScanActivity : Base() {
     private lateinit var progress: ProgressBar
     private lateinit var list: LinearLayout
     private lateinit var again: TextView
+    private var opened: String? = null // the device just tapped: the TV remote is back on it after adding it
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
@@ -33,7 +34,7 @@ class ScanActivity : Base() {
         col.setPadding(p, p, p, p)
         scroll.addView(col)
 
-        col.addView(Ui.text(this, t("البحث في الشبكة", "Search the network"), 26f, Ui.TEXT, true))
+        col.addView(Ui.heading(Ui.text(this, t("البحث في الشبكة", "Search the network"), 26f, Ui.TEXT, true)))
         status = Ui.text(this, "", 15f, Ui.MUTED)
         status.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         col.addView(status, Ui.below(this, 8))
@@ -54,7 +55,7 @@ class ScanActivity : Base() {
                 "إذا لم تظهر الكاميرا:\n" +
                     "• تأكد أن الجهاز على نفس الواي فاي الذي عليه الكاميرات.\n" +
                     "• إذا كانت الكاميرات موصولة على مسجّل (NVR/DVR) فسيظهر المسجّل وحده: أضفه واختر رقم القناة لكل كاميرا.\n" +
-                    "• تقدر دائمًا تضيفها يدويًا من «إضافة كاميرا» إذا كنت تعرف عنوانها (من تطبيق الكاميرا أو صفحة الراوتر).",
+                    "• ويمكنك دائمًا إضافتها يدويًا من «إضافة كاميرا» إذا كنت تعرف عنوانها (من تطبيق الكاميرا أو صفحة الراوتر).",
                 "If a camera does not appear:\n" +
                     "• Make sure this device is on the same Wi-Fi as the cameras.\n" +
                     "• Cameras on a recorder (NVR/DVR) show as the recorder only: add it and choose each camera's channel.\n" +
@@ -72,6 +73,7 @@ class ScanActivity : Base() {
     override fun onResume() {
         super.onResume()
         if (!running) render() // «added» marks after adding one
+        opened = null
     }
 
     override fun onDestroy() {
@@ -93,7 +95,7 @@ class ScanActivity : Base() {
         found.clear()
         render()
         val ip = local.hostAddress ?: ""
-        status.text = t("جاري البحث في الشبكة ${ip.substringBeforeLast('.')}.x …", "Searching ${ip.substringBeforeLast('.')}.x …")
+        status.text = t("جارٍ البحث في الشبكة ${ip.substringBeforeLast('.')}.x …", "Searching ${ip.substringBeforeLast('.')}.x …")
         progress.progress = 0
         progress.visibility = View.VISIBLE
         again.visibility = View.GONE
@@ -155,6 +157,8 @@ class ScanActivity : Base() {
         again.visibility = View.VISIBLE
         status.text = if (found.isEmpty()) t("انتهى البحث: لم أجد أي كاميرا.", "Search finished: no camera found.")
         else t("انتهى البحث: ", "Search finished: ") + Ui.devices(this, found.size) + t(". اضغط على الجهاز لإضافته.", ". Tap a device to add it.")
+        // TV: the remote goes to the first device found (or «Search again»), unless it is already on one
+        if (tv && list.findFocus() == null) (list.getChildAt(0) ?: again).requestFocus()
     }
 
     private fun releaseLock() {
@@ -166,6 +170,8 @@ class ScanActivity : Base() {
     }
 
     private fun render() {
+        // the list is rebuilt for every new device: keep the TV remote on the same one
+        val keep = (list.findFocus()?.tag as? String) ?: opened
         list.removeAllViews()
         val saved = Store.all(this)
         for (f in found.values.sortedBy { it.lastPart() }) {
@@ -178,8 +184,9 @@ class ScanActivity : Base() {
             if (f.rtsp) details.add("RTSP" + if (f.port > 0) " ${f.port}" else "")
             if (details.isNotEmpty()) card.addView(Ui.text(this, details.joinToString(" · "), 13f, Ui.MUTED), Ui.below(this, 4))
             if (mine != null) card.addView(Ui.text(this, t("✓ مضافة باسم «${mine.name}»", "✓ Added as “${mine.name}”"), 13f, Ui.GREEN), Ui.below(this, 4))
-            card.contentDescription = (f.brand?.label(this) ?: t("جهاز فيديو", "Video device")) + " " + f.ip
+            card.tag = f.ip
             card.setOnClickListener {
+                opened = f.ip
                 val i = Intent(this, EditActivity::class.java)
                 if (mine != null) {
                     i.putExtra("id", mine.id)
@@ -193,5 +200,6 @@ class ScanActivity : Base() {
             }
             list.addView(card, Ui.below(this, 10))
         }
+        if (keep != null) list.findViewWithTag<View>(keep)?.requestFocus()
     }
 }

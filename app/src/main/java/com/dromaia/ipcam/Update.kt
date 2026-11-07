@@ -66,7 +66,10 @@ object Update {
         return Info(latest, stable)
     }
 
-    /** Starts downloading release v[version]; returns its download id, or NEEDS_PERMISSION / FAILED. */
+    /**
+     * Starts downloading release v[version]; returns its download id, or NEEDS_PERMISSION / FAILED.
+     * If an update is already downloading (or waiting for the network), returns that one and leaves its file alone.
+     */
     fun start(a: Activity, version: Int): Long {
         if (Build.VERSION.SDK_INT >= 26 && !a.packageManager.canRequestPackageInstalls()) {
             try {
@@ -77,6 +80,8 @@ object Update {
         }
         return try {
             val dm = a.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val busy = running(dm)
+            if (busy >= 0) return busy
             a.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.listFiles()?.forEach { it.delete() }
             val req = DownloadManager.Request(Uri.parse(url(version)))
                 .setTitle(L.t(a, "كاميرات البيت — النسخة $version", "Home Cameras — version $version"))
@@ -87,6 +92,17 @@ object Update {
         } catch (_: Exception) {
             FAILED
         }
+    }
+
+    // a download of this app that is waiting, running or paused (-1 = none)
+    private fun running(dm: DownloadManager): Long {
+        val q = DownloadManager.Query().setFilterByStatus(
+            DownloadManager.STATUS_PENDING or DownloadManager.STATUS_RUNNING or DownloadManager.STATUS_PAUSED
+        )
+        dm.query(q)?.use { cur ->
+            if (cur.moveToFirst()) return cur.getLong(cur.getColumnIndexOrThrow(DownloadManager.COLUMN_ID))
+        }
+        return -1L
     }
 
     /** -1 = failed, 0..99 = downloading (percent), 100 = done. */
@@ -134,6 +150,7 @@ object Update {
             }
             if (ids.isNotEmpty()) dm.remove(*ids.toLongArray())
             c.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.listFiles()?.forEach { it.delete() }
+            Prefs.putLong(c, "updId", -1L)
             prefs.edit().putLong("installedAt", installed).apply()
         } catch (_: Exception) {
         }

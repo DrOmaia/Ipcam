@@ -28,7 +28,7 @@ object PhoneCams {
         try {
             val nsd = c.applicationContext.getSystemService(Context.NSD_SERVICE) as NsdManager
             val info = NsdServiceInfo()
-            info.serviceName = name.ifBlank { "Phone camera" }.take(40)
+            info.serviceName = name.ifBlank { L.t(c, "جوال كاميرا", "Phone camera") }.take(40)
             info.serviceType = TYPE
             info.port = port
             val l = object : NsdManager.RegistrationListener {

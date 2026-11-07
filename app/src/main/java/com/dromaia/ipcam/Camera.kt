@@ -107,6 +107,7 @@ class Camera(
 
 // The cameras are kept in the app's private storage on this device only. They leave it only when the owner sends
 // them himself to another device of the family on the same Wi-Fi (Transfer, with the code shown on that device).
+// Changes are one at a time (@Synchronized): two transfers arriving together must not lose each other's cameras.
 object Store {
     private const val PREFS = "ipcam"
     private const val KEY = "cameras"
@@ -121,6 +122,7 @@ object Store {
         return out
     }
 
+    @Synchronized
     fun write(c: Context, list: List<Camera>) {
         val a = JSONArray()
         list.forEach { a.put(it.toJson()) }
@@ -131,6 +133,7 @@ object Store {
 
     fun get(c: Context, id: String): Camera? = all(c).firstOrNull { it.id == id }
 
+    @Synchronized
     fun put(c: Context, cam: Camera) {
         val list = all(c)
         val i = list.indexOfFirst { it.id == cam.id }
@@ -138,9 +141,11 @@ object Store {
         write(c, list)
     }
 
+    @Synchronized
     fun remove(c: Context, id: String) = write(c, all(c).filter { it.id != id })
 
     /** Cameras received from another device: same id = replaced, new id = added. Returns how many. */
+    @Synchronized
     fun merge(c: Context, incoming: List<Camera>): Int {
         val list = all(c)
         for (cam in incoming) {

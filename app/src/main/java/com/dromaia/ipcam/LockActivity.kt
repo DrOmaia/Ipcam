@@ -3,7 +3,6 @@ package com.dromaia.ipcam
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -15,12 +14,14 @@ import android.widget.TextView
  *  - normal: asked before the app opens (Base starts this screen); Back leaves the app.
  *  - extra "set" = true: choose a new PIN (typed twice); finishes with RESULT_OK when saved.
  * Digits come from the on-screen pad (touch, or the TV remote's arrows + OK) or the remote's number keys.
+ * After 5 wrong PINs in a row no PIN is accepted for a while: 30 seconds, then 2 minutes, then 10 minutes each time
+ * (kept in the settings, so closing the app does not reset it).
  */
 class LockActivity : Base() {
     companion object {
         const val SET = "set"
-        private var wrongCount = 0
-        private var waitUntil = 0L
+        private const val TRIES = 5
+        private const val LONGEST_WAIT = 10 * 60_000L
     }
 
     override val lockable = false
@@ -43,14 +44,17 @@ class LockActivity : Base() {
         val p = Ui.dp(this, 24)
         root.setPadding(p, p, p, p)
 
-        title = Ui.text(this, "", 22f, Ui.TEXT, true)
+        title = Ui.heading(Ui.text(this, "", 22f, Ui.TEXT, true))
         title.gravity = Gravity.CENTER
+        title.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         root.addView(title)
         dots = Ui.text(this, "", 40f, Ui.GOLD, true)
         dots.gravity = Gravity.CENTER
+        dots.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         root.addView(dots, Ui.below(this, 16))
         note = Ui.text(this, "", 15f, Ui.MUTED)
         note.gravity = Gravity.CENTER
+        note.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_ASSERTIVE
         root.addView(note, Ui.below(this, 8))
 
         // the pad: 1 2 3 / 4 5 6 / 7 8 9 / ⌫ 0 ✓ — always left to right like a phone keypad
@@ -65,6 +69,7 @@ class LockActivity : Base() {
             for (k in row) {
                 val b = Ui.button(this, k, primary = k == "✓") { press(k) }
                 b.textSize = 24f * Ui.scale(this)
+                b.setPadding(0, 0, 0, 0) // the big digit fills the square key (no clipping)
                 b.contentDescription = when (k) {
                     "⌫" -> t("حذف", "Delete")
                     "✓" -> t("تأكيد", "OK")
@@ -82,21 +87,30 @@ class LockActivity : Base() {
             it.topMargin = Ui.dp(this, 20)
         })
         if (!setting) {
-            val forgot = Ui.text(this, t("نسيت الرمز؟", "Forgot the PIN?"), 14f, Ui.GOLD)
-            forgot.isFocusable = true
-            forgot.isClickable = true
-            forgot.setPadding(p, p / 2, p, p / 2)
-            forgot.setOnClickListener {
+            val forgot = Ui.button(this, t("نسيت الرمز؟", "Forgot the PIN?")) {
                 note.text = t(
-                    "لا يمكن فتحه بدون الرمز. الحل: إعدادات الجهاز ← التطبيقات ← كاميرات البيت ← مسح البيانات، ثم أضف الكاميرات من جديد (أو استقبلها من جهاز آخر).",
-                    "It cannot be opened without the PIN. The fix: device Settings → Apps → Home Cameras → Clear data, then add the cameras again (or receive them from another device).",
+                    "لا يمكن فتح التطبيق دون الرمز. الحل: إعدادات الجهاز ← التطبيقات ← كاميرات البيت ← مسح البيانات، ثم أضف الكاميرات من جديد (أو استقبلها من جهاز آخر).",
+                    "The app cannot be opened without the PIN. The fix: device Settings → Apps → Home Cameras → Clear data, then add the cameras again (or receive them from another device).",
                 )
             }
+            forgot.textSize = 14f * Ui.scale(this)
+            forgot.setTextColor(Ui.GOLD)
+            forgot.background = Ui.states(this, Ui.BG, Ui.CARD_DOWN)
             root.addView(forgot, Ui.below(this, 12).also { it.width = LinearLayout.LayoutParams.WRAP_CONTENT })
         }
         setContentView(root)
         refresh()
+        if (!setting) {
+            val wait = waitLeft()
+            if (wait > 0) note.text = waitText(wait)
+        }
         firstKey?.requestFocus()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // a PIN screen left behind another screen after the PIN was already typed: close it
+        if (!setting && !Lock.needed(this)) finish()
     }
 
     private fun refresh() {
@@ -109,11 +123,31 @@ class LockActivity : Base() {
         dots.contentDescription = t("أُدخل ${typed.length} من 4", "${typed.length} of 4 entered")
     }
 
+    /** Seconds left before a PIN is accepted again (0 = now). */
+    private fun waitLeft(): Long {
+        val now = System.currentTimeMillis()
+        var until = Prefs.pinWait(this)
+        // the clock was moved back: never more than the longest wait
+        if (until - now > LONGEST_WAIT) {
+            until = now + LONGEST_WAIT
+            Prefs.putLong(this, "pinWait", until)
+        }
+        val left = until - now
+        return if (left <= 0) 0L else (left + 999) / 1000
+    }
+
+    private fun waitText(seconds: Long): String {
+        val n = seconds.toInt()
+        return t("انتظر " + Ui.count(n, "ثانية واحدة", "ثانيتين", "ثوانٍ", "ثانية"), if (n == 1) "Wait 1 second" else "Wait $n seconds")
+    }
+
     private fun press(k: String) {
-        val wait = waitUntil - SystemClock.elapsedRealtime()
-        if (!setting && wait > 0) {
-            note.text = t("انتظر ${(wait / 1000) + 1} ثانية", "Wait ${(wait / 1000) + 1} seconds")
-            return
+        if (!setting) {
+            val wait = waitLeft()
+            if (wait > 0) {
+                note.text = waitText(wait)
+                return
+            }
         }
         when (k) {
             "⌫" -> if (typed.isNotEmpty()) typed.deleteCharAt(typed.length - 1)
@@ -141,21 +175,29 @@ class LockActivity : Base() {
                 return
             } else {
                 first = null
-                note.text = t("الرمزان غير متطابقين، ابدأ من جديد", "The PINs do not match, start again")
+                note.text = t("الرمزان غير متطابقين. ابدأ من جديد.", "The PINs do not match. Start again.")
             }
         } else if (Lock.check(this, pin)) {
-            wrongCount = 0
+            Prefs.put(this, "pinWrong", 0)
+            Prefs.putLong(this, "pinWait", 0L)
             Lock.open()
             finish()
             return
         } else {
-            wrongCount++
-            if (wrongCount >= 5) {
-                wrongCount = 0
-                waitUntil = SystemClock.elapsedRealtime() + 30_000
-                note.text = t("رمز غير صحيح 5 مرات: انتظر 30 ثانية", "Wrong PIN 5 times: wait 30 seconds")
+            val wrong = Prefs.pinWrong(this) + 1
+            Prefs.put(this, "pinWrong", wrong)
+            if (wrong % TRIES == 0) {
+                // 5 wrong in a row: 30 seconds the first time, then 2 minutes, then 10 minutes
+                val ms = when (wrong / TRIES) {
+                    1 -> 30_000L
+                    2 -> 120_000L
+                    else -> LONGEST_WAIT
+                }
+                Prefs.putLong(this, "pinWait", System.currentTimeMillis() + ms)
+                note.text = t("رمز غير صحيح ($TRIES من $TRIES). ", "Wrong PIN ($TRIES of $TRIES). ") + waitText(ms / 1000)
             } else {
-                note.text = t("رمز غير صحيح", "Wrong PIN")
+                val n = wrong % TRIES
+                note.text = t("رمز غير صحيح ($n من $TRIES)", "Wrong PIN ($n of $TRIES)")
             }
         }
         refresh()

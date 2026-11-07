@@ -7,6 +7,7 @@ import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -37,6 +38,7 @@ class EditActivity : Base() {
     private lateinit var hint: TextView
     private lateinit var preview: TextView
     private lateinit var advanced: LinearLayout
+    private lateinit var more: TextView // opens / closes the ONVIF options
     private val brandButtons = HashMap<Brand, TextView>()
     private val hostRows = ArrayList<View>()    // address, port, user, password: not for «RTSP link»
     private val channelRows = ArrayList<View>() // channel: Hikvision and Dahua only
@@ -54,7 +56,8 @@ class EditActivity : Base() {
             c.brand = Brand.of(intent.getStringExtra("brand")) ?: Brand.HIKVISION
             c.port = intent.getIntExtra("port", 0).let { if (it > 0) it else c.brand.port }
             if (c.brand == Brand.PHONE) c.user = "ipcam"
-            if (c.brand == Brand.IPWEBCAM) c.user = ""
+            // IP Webcam: usually no user; Tapo: the «Camera Account» made in the Tapo app (never "admin")
+            if (c.brand == Brand.IPWEBCAM || c.brand == Brand.TAPO) c.user = ""
         }
         brand = cam.brand
 
@@ -67,10 +70,10 @@ class EditActivity : Base() {
         col.setPadding(p, p, p, p)
         scroll.addView(col)
 
-        col.addView(Ui.text(this, if (isNew) t("إضافة كاميرا", "Add camera") else t("تعديل الكاميرا", "Edit camera"), 26f, Ui.TEXT, true))
+        col.addView(Ui.heading(Ui.text(this, if (isNew) t("إضافة كاميرا", "Add camera") else t("تعديل الكاميرا", "Edit camera"), 26f, Ui.TEXT, true)))
         if (tv && isNew) {
-            col.addView(note(t("أسهل: أرسل الكاميرات من جوالك (الإعدادات ← إرسال الكاميرات) بدل الكتابة بالريموت.",
-                "Easier: send the cameras from your phone (Settings → Send cameras) instead of typing with the remote.")), Ui.below(this, 8))
+            col.addView(note(t("الأسهل: أرسل الكاميرات من جوالك (الإعدادات ← إرسال الكاميرات) بدل الكتابة بالريموت.",
+                "Easiest: send the cameras from your phone (Settings → Send cameras) instead of typing with the remote.")), Ui.below(this, 8))
         }
 
         // make of the camera: 6 buttons, 2 per row
@@ -89,6 +92,7 @@ class EditActivity : Base() {
         }
 
         hint = note("")
+        hint.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE // read out when the make changes
         col.addView(hint, Ui.below(this, 12))
 
         nameField = Ui.field(this, t("مثل: الباب الأمامي", "e.g. Front door"))
@@ -104,7 +108,7 @@ class EditActivity : Base() {
             for (g in groups.take(4)) {
                 val b = Ui.button(this, g) { groupField.setText(g) }
                 b.textSize = 13f * Ui.scale(this)
-                b.minHeight = Ui.dp(this, 44)
+                b.minHeight = Ui.dp(this, 48)
                 chips.addView(b, Ui.share(this, 3))
             }
             col.addView(chips, Ui.below(this, 6))
@@ -120,15 +124,27 @@ class EditActivity : Base() {
 
         userField = Ui.field(this, "admin")
         userField.setText(cam.user)
-        addRow(col, t("اسم المستخدم", "User name"), userField, hostRows)
+        addRow(col, t("اسم المستخدم", "Username"), userField, hostRows)
 
         passField = Ui.field(this, "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         passField.setText(cam.pass)
+        if (tv) {
+            // TV: «Done» on the keyboard saves and opens the camera (no walking down with the remote)
+            passField.imeOptions = EditorInfo.IME_ACTION_DONE
+            passField.setOnEditorActionListener { _, action, _ ->
+                if (action == EditorInfo.IME_ACTION_DONE) {
+                    save(watch = true)
+                    true
+                } else {
+                    false
+                }
+            }
+        }
         addRow(col, t("كلمة المرور", "Password"), passField, hostRows)
         val showPass = Ui.text(this, t("إظهار كلمة المرور", "Show password"), 14f, Ui.GOLD)
         showPass.isFocusable = true
         showPass.isClickable = true
-        showPass.minHeight = Ui.dp(this, 44)
+        showPass.minHeight = Ui.dp(this, 48)
         showPass.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 10))
         var passShown = false
         showPass.setOnClickListener {
@@ -147,12 +163,12 @@ class EditActivity : Base() {
 
         urlField = Ui.field(this, "rtsp://user:pass@192.168.1.50:554/stream", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
         urlField.setText(cam.url)
-        addRow(col, t("رابط البث RTSP كامل", "Full RTSP link"), urlField, urlRows)
+        addRow(col, t("رابط البث الكامل (RTSP)", "Full RTSP link"), urlField, urlRows)
 
         // alerts and ONVIF: in a part that opens
-        alertBox = check(t("تنبيه الحركة لهذه الكاميرا", "Motion alert for this camera"), cam.alert)
-        popBox = check(t("على التلفزيون: أظهرها فوق التطبيقات عند الحركة", "On the TV: show it over other apps on motion"), cam.popTv)
-        ptzBox = check(t("كاميرا متحركة (تدور يمين ويسار وأعلى وأسفل)", "Moving camera (pan / tilt / zoom)"), cam.ptz)
+        alertBox = Ui.check(this, t("تنبيه الحركة لهذه الكاميرا", "Motion alert for this camera"), cam.alert)
+        popBox = Ui.check(this, t("على التلفزيون: أظهرها فوق التطبيقات عند الحركة", "On the TV: show it over other apps on motion"), cam.popTv)
+        ptzBox = Ui.check(this, t("كاميرا متحركة (تدور يمينًا ويسارًا وأعلى وأسفل، وتقرّب وتبعّد)", "Moving camera (pan / tilt / zoom)"), cam.ptz)
         col.addView(alertBox, Ui.below(this, 18))
         col.addView(popBox, Ui.below(this, 2))
         col.addView(ptzBox, Ui.below(this, 2))
@@ -161,10 +177,9 @@ class EditActivity : Base() {
         advanced = LinearLayout(this)
         advanced.orientation = LinearLayout.VERTICAL
         advanced.visibility = View.GONE
-        val more = Ui.button(this, t("خيارات ONVIF (للتنبيه والتحريك) ▾", "ONVIF options (alerts and PTZ) ▾")) {
-            advanced.visibility = if (advanced.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-        }
+        more = Ui.button(this, "") { showAdvanced(advanced.visibility != View.VISIBLE) }
         more.textSize = 14f * Ui.scale(this)
+        showAdvanced(false)
         col.addView(more, Ui.below(this, 10))
         col.addView(advanced, Ui.below(this, 0))
         onvifRows.add(more); onvifRows.add(advanced)
@@ -206,6 +221,10 @@ class EditActivity : Base() {
 
         setContentView(scroll)
         choose(brand, first = true)
+        // TV, a new camera found by the search: straight to the field still to fill (the remote is slow to walk)
+        if (tv && isNew && brand != Brand.CUSTOM && hostField.text.isNotBlank()) {
+            (if (brand == Brand.TAPO && userField.text.isBlank()) userField else passField).requestFocus()
+        }
     }
 
     private fun label(s: String) = Ui.text(this, s, 15f, Ui.TEXT, true)
@@ -216,14 +235,12 @@ class EditActivity : Base() {
         return n
     }
 
-    private fun check(s: String, on: Boolean): CheckBox {
-        val c = CheckBox(this)
-        c.text = s
-        c.textSize = 15f * Ui.scale(this)
-        c.setTextColor(Ui.TEXT)
-        c.isChecked = on
-        c.minHeight = Ui.dp(this, 48)
-        return c
+    // the ONVIF part: ▾ closed / ▴ open, and TalkBack says which
+    private fun showAdvanced(open: Boolean) {
+        advanced.visibility = if (open) View.VISIBLE else View.GONE
+        val label = t("خيارات ONVIF (للتنبيه والتحريك)", "ONVIF options (alerts and PTZ)")
+        more.text = label + if (open) " ▴" else " ▾"
+        more.contentDescription = label + if (open) t("، مفتوحة", ", expanded") else t("، مغلقة", ", collapsed")
     }
 
     private fun addRow(col: LinearLayout, title: String, field: EditText, group: ArrayList<View>?) {
@@ -240,8 +257,11 @@ class EditActivity : Base() {
         if (!first && ::portField.isInitialized) {
             val typed = portField.text.toString().toIntOrNull()
             if (typed == null || typed == brand.port) portField.setText(b.port.toString())
-            if (b == Brand.PHONE && userField.text.isBlank()) userField.setText("ipcam")
-            if (b != Brand.IPWEBCAM && b != Brand.PHONE && userField.text.isBlank()) userField.setText("admin")
+            val user = userField.text.toString()
+            if (b == Brand.PHONE && user.isBlank()) userField.setText("ipcam")
+            // Tapo has no "admin": a new Tapo camera starts with an empty user (its «Camera Account»)
+            if (b == Brand.TAPO && isNew && user == "admin") userField.setText("")
+            if (b != Brand.IPWEBCAM && b != Brand.PHONE && b != Brand.TAPO && user.isBlank()) userField.setText("admin")
         }
         brand = b
         brandButtons.forEach { (k, btn) ->
@@ -255,9 +275,10 @@ class EditActivity : Base() {
         channelRows.forEach { it.visibility = if (b == Brand.HIKVISION || b == Brand.DAHUA) View.VISIBLE else View.GONE }
         urlRows.forEach { it.visibility = if (custom) View.VISIBLE else View.GONE }
         onvifRows.forEach { it.visibility = if (b.onvif) View.VISIBLE else View.GONE }
-        if (b.onvif) advanced.visibility = View.GONE
+        if (b.onvif) showAdvanced(false)
         popBox.visibility = if (b.onvif) View.VISIBLE else View.GONE
         if (::onvifPortField.isInitialized) onvifPortField.hint = b.onvifPort.toString()
+        userField.hint = if (b == Brand.TAPO) t("اسم «حساب الكاميرا»", "Camera Account user") else "admin"
         hint.text = when (b) {
             Brand.HIKVISION -> t(
                 "اسم المستخدم عادةً admin، وكلمة المرور هي كلمة مرور الجهاز نفسه.\nإذا كانت الكاميرات موصولة على مسجّل NVR: أضف عنوان المسجّل، واكتب رقم القناة لكل كاميرا.",
@@ -317,11 +338,11 @@ class EditActivity : Base() {
         readInto(cam)
         if (brand == Brand.CUSTOM) {
             if (!cam.url.startsWith("rtsp://", ignoreCase = true)) {
-                toast(t("اكتب رابطًا يبدأ بـ rtsp://", "Type a link that starts with rtsp://"))
+                fieldError(urlField, t("اكتب رابطًا يبدأ بـ rtsp://", "Type a link that starts with rtsp://"))
                 return
             }
         } else if (cam.host.isEmpty()) {
-            toast(t("اكتب عنوان الكاميرا (IP)", "Type the camera's address (IP)"))
+            fieldError(hostField, t("اكتب عنوان الكاميرا (IP)", "Type the camera's address (IP)"))
             return
         }
         if (cam.name.isEmpty()) cam.name = cam.where().ifEmpty { brand.label(this) }
@@ -343,6 +364,12 @@ class EditActivity : Base() {
             }
             .setNegativeButton(t("إلغاء", "Cancel"), null)
             .show()
+    }
+
+    // the message next to the field itself, and the cursor (or the TV remote) goes there
+    private fun fieldError(f: EditText, msg: String) {
+        f.error = msg
+        f.requestFocus()
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()

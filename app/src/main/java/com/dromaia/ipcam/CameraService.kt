@@ -43,11 +43,11 @@ import android.util.Size
 import android.view.Surface
 import java.io.BufferedInputStream
 import java.io.DataInputStream
-import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.SecureRandom
+import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 
@@ -57,7 +57,7 @@ import kotlin.math.abs
  * A foreground service (notification «هذا الجوال يعمل كاميرا», with a Stop button) that keeps running with the screen
  * off: Camera2 → H.264 encoder (and AAC from the microphone when the sound is on) → [RtspServer] on port 8554,
  * announced on the Wi-Fi by [PhoneCams]. It also listens on port 8555 for a viewer who talks (push-to-talk, [Talk])
- * and plays that voice on the loud speaker, one talker at a time.
+ * and plays that voice on the loud speaker, one talker at a time (signed in with a challenge, [TalkAuth]).
  * Must be started while [CameraModeActivity] is on screen (Android allows the camera only then).
  */
 class CameraService : Service() {
@@ -220,6 +220,7 @@ class CameraService : Service() {
     private var wifi: WifiManager.WifiLock? = null
     private var talkServer: ServerSocket? = null
     private val talking = AtomicBoolean(false)
+    private val talkSlots = Semaphore(3) // at most 3 talk connections at once; more are closed at once
     @Volatile private var micOk = true
     private var noteCount = -1
 
@@ -477,7 +478,7 @@ class CameraService : Service() {
     @SuppressLint("MissingPermission")
     private fun openCamera(mgr: CameraManager, id: String, myGen: Int) {
         if (!granted(Manifest.permission.CAMERA)) {
-            return fail(t("اسمح للتطبيق باستخدام الكاميرا، ثم شغّل وضع الكاميرا من جديد.", "Allow the camera, then start camera mode again."), false)
+            return fail(t("اسمح للتطبيق باستخدام الكاميرا، ثم شغّل وضع الكاميرا من جديد.", "Allow camera access, then start camera mode again."), false)
         }
         mgr.openCamera(id, object : CameraDevice.StateCallback() {
             override fun onOpened(d: CameraDevice) {
@@ -888,42 +889,43 @@ class CameraService : Service() {
         talkServer = ss
         val th = Thread({
             while (!ss.isClosed) {
-                val s = try { ss.accept() } catch (_: Exception) { break }
-                val h = Thread({ talk(s) }, "ipcam-talk")
-                h.isDaemon = true
-                h.start()
+                val s = try {
+                    ss.accept()
+                } catch (_: Throwable) {
+                    if (ss.isClosed) break
+                    // a passing problem (too many open files…): keep listening
+                    try { Thread.sleep(200) } catch (_: InterruptedException) { break }
+                    continue
+                }
+                if (!talkSlots.tryAcquire()) {
+                    try { s.close() } catch (_: Exception) {}
+                    continue
+                }
+                try {
+                    val h = Thread({
+                        try { talk(s) } finally { talkSlots.release() }
+                    }, "ipcam-talk")
+                    h.isDaemon = true
+                    h.start()
+                } catch (_: Throwable) {
+                    // no memory or no thread: this one is turned away, the server keeps going
+                    talkSlots.release()
+                    try { s.close() } catch (_: Exception) {}
+                }
             }
         }, "ipcam-talk-accept")
         th.isDaemon = true
         th.start()
     }
 
-    private fun firstLine(input: InputStream): String {
-        val sb = StringBuilder()
-        while (sb.length < 200) {
-            val c = input.read()
-            if (c < 0 || c == '\n'.code) break
-            if (c != '\r'.code) sb.append(c.toChar())
-        }
-        return sb.toString()
-    }
-
-    /** First line "TALK ipcam <password>", then 16 kHz mono 16-bit sound until the viewer lets go of the button. */
+    /** The challenge sign-in ([TalkAuth]), then 16 kHz mono 16-bit sound until the viewer lets go of the button. */
     private fun talk(s: Socket) {
         try {
             s.soTimeout = 5000
             s.tcpNoDelay = true
             val input = BufferedInputStream(s.getInputStream())
             val out = s.getOutputStream()
-            val parts = firstLine(input).split(' ')
-            val pass = Prefs.str(this, K_PASS)
-            val ok = parts.size >= 3 && parts[0] == "TALK" && pass.isNotEmpty() && RtspServer.same(parts.drop(2).joinToString(" "), pass)
-            if (!ok) {
-                Thread.sleep(1000) // guessing the password takes long
-                out.write("ERR\n".toByteArray(Charsets.UTF_8))
-                out.flush()
-                return
-            }
+            if (!TalkAuth.cameraSide(input, out, Prefs.str(this, K_PASS))) return
             if (!running || !talking.compareAndSet(false, true)) {
                 out.write("BUSY\n".toByteArray(Charsets.UTF_8))
                 out.flush()

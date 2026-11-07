@@ -27,8 +27,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import java.text.DateFormat
-import java.util.Date
 
 /**
  * «اجعل هذا الجوال كاميرا»: the picture of this phone's camera, start / stop, back or front camera, quality, sound,
@@ -136,10 +134,12 @@ class CameraModeActivity : Base() {
         val p = Ui.dp(this, 48)
         c.setPadding(p, p, p, p)
         sc.addView(c)
-        c.addView(Ui.text(this, t("الجوال كاميرا", "Phone as a camera"), 26f, Ui.TEXT, true))
+        val head = Ui.text(this, t("الجوال كاميرا", "Phone as a camera"), 26f, Ui.TEXT, true)
+        Ui.heading(head)
+        c.addView(head)
         c.addView(note(t(
             "هذه الميزة للجوال وليست للتلفزيون: افتح «كاميرات البيت» على جوال قديم ← الإعدادات ← «اجعل هذا الجوال كاميرا»، ثم ابحث عنه هنا من «بحث في الشبكة».",
-            "This is for phones, not the TV: open “Home Cameras” on an old phone → Settings → “Make this phone a camera”, then find it here with “Search the network”.",
+            "This is for phones, not the TV: open “Home Cameras” on an old phone → Settings → “Make this phone a camera”, then find it here with “Search network”.",
         )), Ui.below(this, 16))
         val back = Ui.button(this, t("رجوع", "Back"), primary = true) { finish() }
         c.addView(back, Ui.below(this, 24))
@@ -215,9 +215,12 @@ class CameraModeActivity : Base() {
 
     private fun buildPanel() {
         col.removeAllViews()
-        col.addView(Ui.text(this, t("اجعل هذا الجوال كاميرا", "Make this phone a camera"), 24f, Ui.TEXT, true))
+        val head = Ui.text(this, t("اجعل هذا الجوال كاميرا", "Make this phone a camera"), 24f, Ui.TEXT, true)
+        Ui.heading(head)
+        col.addView(head)
         val st = Ui.text(this, "", 15f, Ui.MUTED)
         st.setLineSpacing(0f, 1.2f)
+        st.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE // TalkBack reads it when the state changes
         status = st
         col.addView(st, Ui.below(this, 6))
         val sb = Ui.button(this, "", primary = true) { toggle() }
@@ -244,7 +247,7 @@ class CameraModeActivity : Base() {
         // sound
         col.addView(label(t("الصوت", "Sound")), Ui.below(this, 18))
         val sound = Prefs.bool(this, CameraService.K_SOUND, true)
-        col.addView(choice(listOf("on" to t("يعمل", "On"), "off" to t("مغلق", "Off")), if (sound) "on" else "off") { v ->
+        col.addView(choice(listOf("on" to t("تشغيل", "On"), "off" to t("إيقاف", "Off")), if (sound) "on" else "off") { v ->
             setSound(v == "on")
         }, Ui.below(this, 8))
 
@@ -259,7 +262,7 @@ class CameraModeActivity : Base() {
         val a = row(t("العنوان", "Address"), "")
         addrText = a.getChildAt(1) as? TextView
         card.addView(a, Ui.below(this, 6))
-        card.addView(row(t("اسم المستخدم", "User name"), CameraService.USER), Ui.below(this, 6))
+        card.addView(row(t("اسم المستخدم", "Username"), CameraService.USER), Ui.below(this, 6))
         card.addView(row(t("كلمة المرور", "Password"), CameraService.password(this)), Ui.below(this, 6))
         val change = Ui.button(this, t("تغيير كلمة المرور", "Change password")) { changePassword() }
         change.textSize = 14f * Ui.scale(this)
@@ -267,8 +270,8 @@ class CameraModeActivity : Base() {
         col.addView(card, Ui.below(this, 18))
 
         col.addView(note(t(
-            "افتح «كاميرات البيت» على جوالك أو التلفزيون ← بحث في الشبكة، وسيظهر هذا الجوال.",
-            "Open “Home Cameras” on your phone or TV → Search the network, and this phone will appear.",
+            "افتح «كاميرات البيت» على جوالك أو التلفزيون ← «بحث في الشبكة»، وسيظهر هذا الجوال.",
+            "Open “Home Cameras” on your phone or TV → “Search network”, and this phone will appear.",
         )), Ui.below(this, 14))
         col.addView(note(t(
             "ثبّت الجوال بحيث تُقرأ هذه الشاشة معتدلة، فتصل الصورة معتدلة كما تراها هنا. وأبقِه موصولًا بالشاحن.",
@@ -289,7 +292,12 @@ class CameraModeActivity : Base() {
         live()
     }
 
-    private fun label(s: String): TextView = Ui.text(this, s, 15f, Ui.GOLD, true)
+    /** A section title (a heading for TalkBack). */
+    private fun label(s: String): TextView {
+        val v = Ui.text(this, s, 15f, Ui.GOLD, true)
+        Ui.heading(v)
+        return v
+    }
 
     private fun note(s: String): TextView {
         val v = Ui.text(this, s, 14f, Ui.MUTED)
@@ -339,7 +347,7 @@ class CameraModeActivity : Base() {
         if (ok && Prefs.bool(this, CameraService.K_SOUND, true) && !CameraService.soundNow) {
             s += "\n" + t("تعذّر تشغيل الميكروفون، فالبث بلا صوت.", "The microphone could not start, so the stream has no sound.")
         }
-        st.text = s
+        if (st.text.toString() != s) st.text = s // a live region: set only when it changed, so TalkBack reads it once
         st.setTextColor(when {
             ok -> Ui.GREEN
             problem.isNotEmpty() -> Ui.RED
@@ -360,16 +368,15 @@ class CameraModeActivity : Base() {
         box.removeAllViews()
         val talker = CameraService.talker
         val list = CameraService.viewers().distinctBy { it.ip }
-        val time = DateFormat.getTimeInstance(DateFormat.SHORT)
         for (v in list) {
             val who = if (v.name.isNotEmpty()) "${v.name} (${v.ip})" else v.ip
-            val since = time.format(Date(v.since))
+            val since = Alerts.time(this, v.since)
             var line = "• $who  —  " + t("منذ الساعة $since", "since $since")
-            if (v.ip == talker) line += "  —  " + t("يتكلم الآن", "talking now")
+            if (v.ip == talker) line += "  —  " + t("يتحدّث الآن", "talking now")
             box.addView(Ui.text(this, line, 15f, if (v.ip == talker) Ui.GOLD else Ui.TEXT), Ui.below(this, 4))
         }
         if (talker.isNotEmpty() && list.none { it.ip == talker }) {
-            box.addView(Ui.text(this, "• $talker  —  " + t("يتكلم الآن", "talking now"), 15f, Ui.GOLD), Ui.below(this, 4))
+            box.addView(Ui.text(this, "• $talker  —  " + t("يتحدّث الآن", "talking now"), 15f, Ui.GOLD), Ui.below(this, 4))
         }
         if (list.isEmpty() && talker.isEmpty()) {
             box.addView(note(if (on) t("لا أحد يشاهد الآن.", "Nobody is watching now.") else "—"))
@@ -391,18 +398,24 @@ class CameraModeActivity : Base() {
         val need = ArrayList<String>()
         if (!granted(Manifest.permission.CAMERA)) need.add(Manifest.permission.CAMERA)
         if (sound && !granted(Manifest.permission.RECORD_AUDIO)) need.add(Manifest.permission.RECORD_AUDIO)
+        val explain = need.isNotEmpty()
+        // the camera mode notification with its Stop button (Android 13+): asked too, also when the camera is already allowed
+        if (Build.VERSION.SDK_INT >= 33 && !granted(Manifest.permission.POST_NOTIFICATIONS)) need.add(Manifest.permission.POST_NOTIFICATIONS)
         if (need.isEmpty()) {
             startNow()
             return
         }
-        // the camera mode notification (Android 13+) is asked together, so it is one visit to the permissions
-        if (Build.VERSION.SDK_INT >= 33 && !granted(Manifest.permission.POST_NOTIFICATIONS)) need.add(Manifest.permission.POST_NOTIFICATIONS)
+        if (!explain) {
+            // only the notification is missing: Android's own question is enough (camera mode starts after the answer)
+            requestPermissions(need.toTypedArray(), REQ_START)
+            return
+        }
         val msg = if (sound) t(
             "حتى يعمل هذا الجوال كاميرا يحتاج التطبيق إذن الكاميرا، وإذن الميكروفون لنقل الصوت. تبقى الصورة داخل شبكة البيت، ولا يشاهدها إلا جهاز يعرف كلمة المرور.",
-            "To work as a camera, the app needs the camera, and the microphone to send sound. The picture stays inside your home network, and only a device that knows the password can watch it.",
+            "To work as a camera, the app needs camera permission, and microphone permission to send sound. The picture stays inside your home network, and only a device that knows the password can watch it.",
         ) else t(
             "حتى يعمل هذا الجوال كاميرا يحتاج التطبيق إذن الكاميرا. تبقى الصورة داخل شبكة البيت، ولا يشاهدها إلا جهاز يعرف كلمة المرور.",
-            "To work as a camera, the app needs the camera. The picture stays inside your home network, and only a device that knows the password can watch it.",
+            "To work as a camera, the app needs camera permission. The picture stays inside your home network, and only a device that knows the password can watch it.",
         )
         AlertDialog.Builder(this)
             .setTitle(t("أذونات وضع الكاميرا", "Camera mode permissions"))
@@ -476,7 +489,7 @@ class CameraModeActivity : Base() {
             AlertDialog.Builder(this)
                 .setTitle(t("الصوت", "Sound"))
                 .setMessage(t("لنقل الصوت يحتاج التطبيق إذن الميكروفون. يسمعه فقط من يشاهد هذه الكاميرا داخل البيت.",
-                    "To send sound, the app needs the microphone. Only those watching this camera at home hear it."))
+                    "To send sound, the app needs microphone permission. Only those watching this camera at home hear it."))
                 .setPositiveButton(t("متابعة", "Continue")) { _, _ -> requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC) }
                 .setNegativeButton(t("إلغاء", "Cancel"), null)
                 .show()

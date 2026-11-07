@@ -19,6 +19,7 @@ import java.util.TimeZone
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.abs
 
 // patterns used to read the cameras' answers (any namespace prefix: tt:, tds:, env:, SOAP-ENV: …)
 private val FAULT_RX = Regex("<(?:[\\w.-]+:)?Fault\\b")
@@ -62,6 +63,7 @@ object Onvif {
     private const val PULL_READ_MS = 15_000 // PullMessages waits up to 10 s on the camera, plus 5 s
     private const val MAX_BYTES = 8 * 1024 * 1024
     private const val MAX_WIDTH = 1280
+    private const val REFUSED_MS = 10 * 60_000L // a refused password: no PTZ / picture tries for 10 minutes
 
     private const val SOAP = "http://www.w3.org/2003/05/soap-envelope"
     private const val DEV = "http://www.onvif.org/ver10/device/wsdl"
@@ -130,55 +132,71 @@ object Onvif {
 
     private val cache = ConcurrentHashMap<String, Session>()
 
+    /**
+     * Cameras that refused the user name / password lately: sign-in signature → until when (elapsedRealtime).
+     * While a camera is in here, PTZ and pictures are not even tried, so a wrong password never gets this device
+     * locked out of the camera (Hikvision and Dahua lock a device out after a few failed sign-ins).
+     */
+    private val refused = ConcurrentHashMap<String, Long>()
+
     // ------------------------------------------------------------------ public API
 
     /** Turn the camera: x = left (-1) … right (1), y = down (-1) … up (1), zoom = out (-1) … in (1). Keeps moving until [ptzStop]. */
-    fun ptzMove(cam: Camera, x: Float, y: Float, zoom: Float = 0f): Boolean = try {
-        withSession(cam) { s ->
-            val token = s.ptzProfile ?: throw Fail()
-            val v = StringBuilder()
-            if (x != 0f || y != 0f || zoom == 0f) {
-                v.append("<PanTilt x=\"").append(num(x)).append("\" y=\"").append(num(y)).append("\" xmlns=\"$TT\"/>")
+    fun ptzMove(cam: Camera, x: Float, y: Float, zoom: Float = 0f): Boolean {
+        if (refusedFor(cam) > 0) return false
+        return try {
+            withSession(cam) { s ->
+                val token = s.ptzProfile ?: throw Fail()
+                val v = StringBuilder()
+                if (x != 0f || y != 0f || zoom == 0f) {
+                    v.append("<PanTilt x=\"").append(num(x)).append("\" y=\"").append(num(y)).append("\" xmlns=\"$TT\"/>")
+                }
+                if (zoom != 0f) v.append("<Zoom x=\"").append(num(zoom)).append("\" xmlns=\"$TT\"/>")
+                soap(
+                    s.ptz, "$PTZ/ContinuousMove",
+                    "<ContinuousMove xmlns=\"$PTZ\"><ProfileToken>${esc(token)}</ProfileToken><Velocity>$v</Velocity></ContinuousMove>",
+                    s.auth,
+                )
+                true
             }
-            if (zoom != 0f) v.append("<Zoom x=\"").append(num(zoom)).append("\" xmlns=\"$TT\"/>")
-            soap(
-                s.ptz, "$PTZ/ContinuousMove",
-                "<ContinuousMove xmlns=\"$PTZ\"><ProfileToken>${esc(token)}</ProfileToken><Velocity>$v</Velocity></ContinuousMove>",
-                s.auth,
-            )
-            true
+        } catch (e: Throwable) {
+            failed(cam, e)
+            false
         }
-    } catch (_: Throwable) {
-        forget(cam)
-        false
     }
 
     /** Stop turning and zooming. */
-    fun ptzStop(cam: Camera): Boolean = try {
-        withSession(cam) { s ->
-            val token = esc(s.ptzProfile ?: throw Fail())
-            try {
-                soap(
-                    s.ptz, "$PTZ/Stop",
-                    "<Stop xmlns=\"$PTZ\"><ProfileToken>$token</ProfileToken><PanTilt>true</PanTilt><Zoom>true</Zoom></Stop>",
-                    s.auth,
-                )
-            } catch (e: Fail) {
-                if (e.auth) throw e
-                // cameras without zoom may refuse the Zoom part; a Stop with no parts stops everything
-                soap(s.ptz, "$PTZ/Stop", "<Stop xmlns=\"$PTZ\"><ProfileToken>$token</ProfileToken></Stop>", s.auth)
+    fun ptzStop(cam: Camera): Boolean {
+        if (refusedFor(cam) > 0) return false
+        return try {
+            withSession(cam) { s ->
+                val token = esc(s.ptzProfile ?: throw Fail())
+                try {
+                    soap(
+                        s.ptz, "$PTZ/Stop",
+                        "<Stop xmlns=\"$PTZ\"><ProfileToken>$token</ProfileToken><PanTilt>true</PanTilt><Zoom>true</Zoom></Stop>",
+                        s.auth,
+                    )
+                } catch (e: Fail) {
+                    if (e.auth) throw e
+                    // cameras without zoom may refuse the Zoom part; a Stop with no parts stops everything
+                    soap(s.ptz, "$PTZ/Stop", "<Stop xmlns=\"$PTZ\"><ProfileToken>$token</ProfileToken></Stop>", s.auth)
+                }
+                true
             }
-            true
+        } catch (e: Throwable) {
+            failed(cam, e)
+            false
         }
-    } catch (_: Throwable) {
-        forget(cam)
-        false
     }
 
     /** A still picture from the camera (at most 1280 px wide), or null. */
     fun snapshot(cam: Camera): Bitmap? {
+        if (refusedFor(cam) > 0) return null
         val (ou, op) = creds(cam)
-        val onvifFirst = listOf(Pair(ou, op), Pair(cam.user, cam.pass)).distinct()
+        // the ONVIF user first, then the camera's own (Hikvision keeps ONVIF users apart); a refused pair is not tried again
+        var pairs = listOf(Pair(ou, op), Pair(cam.user, cam.pass)).distinct()
+        var wasRefused = false
         try {
             val uri = withSession(cam) { s ->
                 s.snapUri ?: run {
@@ -193,34 +211,60 @@ object Onvif {
                     u
                 }
             }
-            val bmp = image(uri, onvifFirst)
-            if (bmp != null) return bmp
+            try {
+                image(uri, pairs)?.let { return it }
+            } catch (e: Fail) {
+                if (e.auth) {
+                    // the picture address refused every user name / password
+                    wasRefused = true
+                    pairs = emptyList()
+                }
+            }
+        } catch (e: Fail) {
+            if (e.auth) {
+                // ONVIF refused its own user name / password: only the camera's own one is left to try
+                wasRefused = true
+                pairs = pairs.drop(1)
+            }
         } catch (_: Throwable) {
         }
         // no picture through ONVIF: the make's own picture address (on the camera's web port)
-        return try {
-            val host = cam.address()
-            if (host.isEmpty()) return null
+        val host = cam.address()
+        if (pairs.isNotEmpty() && host.isNotEmpty()) {
             val hp = hostPort(host, cam.onvifPortOrDefault())
             val url = when (cam.brand) {
                 Brand.HIKVISION -> "http://$hp/ISAPI/Streaming/channels/${cam.channel}01/picture"
                 Brand.DAHUA -> "http://$hp/cgi-bin/snapshot.cgi?channel=${cam.channel}"
-                else -> return null
+                else -> null
             }
-            image(url, onvifFirst.reversed())
-        } catch (_: Throwable) {
-            null
+            if (url != null) {
+                try {
+                    image(url, pairs.reversed())?.let { return it }
+                } catch (e: Fail) {
+                    if (e.auth) wasRefused = true
+                } catch (_: Throwable) {
+                }
+            }
         }
+        if (wasRefused) refuse(cam)
+        return null
     }
 
     /**
      * Listens to the camera's motion events until [stop] says so; [onMotion] gets true when motion starts and false
-     * when it ends. Reconnects by itself (5 s, then longer up to 60 s; 10 minutes after a wrong password so the
-     * camera does not lock this device out). Never throws. Blocks: run it on its own thread.
+     * when it ends. Reconnects by itself (5 s, then longer up to 60 s). After a wrong password it waits 10 minutes,
+     * then 30, then every hour, so the camera does not lock this device out. Never throws. Blocks: run it on its own thread.
      */
     fun watchMotion(cam: Camera, stop: () -> Boolean, onMotion: (Boolean) -> Unit) {
         var wait = 5_000L
+        var refusals = 0
         while (!stop()) {
+            // a PTZ press or a picture of this camera was refused a moment ago: no new sign-in before that pause ends
+            val blocked = refusedFor(cam)
+            if (blocked > 0) {
+                nap(blocked, stop)
+                continue
+            }
             val worked = AtomicBoolean(false)
             var authFail = false
             try {
@@ -231,11 +275,56 @@ object Onvif {
             }
             if (stop()) break
             forget(cam)
-            if (worked.get()) wait = 5_000L
-            // refused after it had worked = a clock jump or a camera restart (the clock is read again): retry soon
-            nap(if (authFail && !worked.get()) 10 * 60_000L else wait, stop)
-            if (!worked.get()) wait = minOf(wait * 2, 60_000L)
+            if (worked.get()) {
+                wait = 5_000L
+                refusals = 0
+            }
+            if (authFail && !worked.get()) {
+                // a wrong password: wait longer each time (PTZ and pictures of this camera wait too)
+                refusals++
+                refuse(cam)
+                nap(
+                    when (refusals) {
+                        1 -> 10 * 60_000L
+                        2 -> 30 * 60_000L
+                        else -> 60 * 60_000L
+                    },
+                    stop,
+                )
+            } else {
+                // refused after it had worked = a clock jump or a camera restart (the clock is read again): retry soon
+                nap(wait, stop)
+                if (!worked.get()) wait = minOf(wait * 2, 60_000L)
+            }
         }
+    }
+
+    // ------------------------------------------------------------------ refused passwords
+
+    /** The camera's sign-in (address, port, user name, password): the channels of one recorder share it. */
+    private fun login(cam: Camera): String {
+        val (u, p) = creds(cam)
+        return listOf(cam.address(), cam.onvifPortOrDefault().toString(), u, p).joinToString("\u0001")
+    }
+
+    /** ms left of the pause after a refused password (0 = it may be tried). */
+    private fun refusedFor(cam: Camera): Long {
+        val key = login(cam)
+        val until = refused[key] ?: return 0L
+        val left = until - SystemClock.elapsedRealtime()
+        if (left > 0) return left
+        refused.remove(key, until)
+        return 0L
+    }
+
+    private fun refuse(cam: Camera) {
+        refused[login(cam)] = SystemClock.elapsedRealtime() + REFUSED_MS
+    }
+
+    /** After a failed PTZ call: learn the camera again next time; a refused password pauses this camera's sign-ins. */
+    private fun failed(cam: Camera, e: Throwable) {
+        forget(cam)
+        if (e is Fail && e.auth) refuse(cam)
     }
 
     // ------------------------------------------------------------------ motion events (PullPoint)
@@ -409,8 +498,9 @@ object Onvif {
     }
 
     /**
-     * Runs [block] with the camera's details; when remembered details fail (also a refused sign-in: the camera
-     * restarted or a clock moved, since the password itself did not change), learns them again once.
+     * Runs [block] with the camera's details; when remembered details fail, learns them again once. A refused
+     * sign-in is tried again only when the camera's clock moved (a restart or a time update): otherwise the password
+     * is wrong, and one press costs one failed sign-in, never a series.
      */
     private fun <T> withSession(cam: Camera, block: (Session) -> T): T {
         val key = sig(cam)
@@ -418,8 +508,9 @@ object Onvif {
         if (cached != null) {
             try {
                 return block(cached)
-            } catch (_: Fail) {
+            } catch (e: Fail) {
                 cache.remove(cam.id)
+                if (e.auth && !clockMoved(cam, cached)) throw e
             }
         }
         val s = build(cam, key)
@@ -432,14 +523,24 @@ object Onvif {
         }
     }
 
+    /** The camera's clock is now more than 5 s away from the one this session signs with (asked without a password). */
+    private fun clockMoved(cam: Camera, s: Session): Boolean = try {
+        val now = clockOffset(deviceUrl(cam))
+        now != null && abs(now - s.auth.offset) > 5_000L
+    } catch (_: Throwable) {
+        false
+    }
+
+    private fun deviceUrl(cam: Camera): String = "http://${hostPort(cam.address(), cam.onvifPortOrDefault())}/onvif/device_service"
+
     private fun build(cam: Camera, key: String): Session {
         val host = cam.address()
         if (host.isEmpty()) throw Fail()
         val (user, pass) = creds(cam)
         val auth = Auth(user, pass)
-        val device = "http://${hostPort(host, cam.onvifPortOrDefault())}/onvif/device_service"
+        val device = deviceUrl(cam)
         // Hikvision refuses a sign-in whose time is far from its own clock: sign with the camera's time
-        auth.offset = clockOffset(device)
+        auth.offset = clockOffset(device) ?: 0L
 
         var media: String? = null
         var ptz: String? = null
@@ -493,17 +594,17 @@ object Onvif {
         )
     }
 
-    /** The camera's clock minus ours (asked without a password, as ONVIF allows). */
-    private fun clockOffset(device: String): Long {
+    /** The camera's clock minus ours (asked without a password, as ONVIF allows); null when the camera does not say. */
+    private fun clockOffset(device: String): Long? {
         val r = post(device, "$DEV/GetSystemDateAndTime", envelope("", "<GetSystemDateAndTime xmlns=\"$DEV\"/>"), null, READ_MS)
-        if (!r.ok) return 0L
-        val utc = inner(r.text, "UTCDateTime") ?: return 0L
-        val y = tag(utc, "Year")?.toIntOrNull() ?: return 0L
-        val mo = tag(utc, "Month")?.toIntOrNull() ?: return 0L
-        val d = tag(utc, "Day")?.toIntOrNull() ?: return 0L
-        val h = tag(utc, "Hour")?.toIntOrNull() ?: return 0L
-        val mi = tag(utc, "Minute")?.toIntOrNull() ?: return 0L
-        val sec = tag(utc, "Second")?.toIntOrNull() ?: return 0L
+        if (!r.ok) return null
+        val utc = inner(r.text, "UTCDateTime") ?: return null
+        val y = tag(utc, "Year")?.toIntOrNull() ?: return null
+        val mo = tag(utc, "Month")?.toIntOrNull() ?: return null
+        val d = tag(utc, "Day")?.toIntOrNull() ?: return null
+        val h = tag(utc, "Hour")?.toIntOrNull() ?: return null
+        val mi = tag(utc, "Minute")?.toIntOrNull() ?: return null
+        val sec = tag(utc, "Second")?.toIntOrNull() ?: return null
         val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
         cal.clear()
         cal.set(y, mo - 1, d, h, mi, sec)
@@ -559,6 +660,8 @@ object Onvif {
             if (r.ok) return r.text
             throw Fail(r.authFailed)
         }
+        // a Digest challenge remembered from an earlier call may have expired; one received during this call may not
+        val remembered = auth.digest && auth.challenge != null
         if (!auth.digest) {
             val r = post(url, action, envelope(security(auth) + header, body, headerNs), null, readMs)
             if (r.ok) return r.text
@@ -575,10 +678,11 @@ object Onvif {
         }
         var r = post(url, action, xml, digestHeader(ch, "POST", url, auth.user, auth.pass), readMs)
         if (r.code == 401) {
-            // the camera's one-time number expired: answer its new challenge once
-            // (the same number again = wrong password: no second try, so the camera does not lock this device out)
+            // a remembered one-time number expired: answer the camera's new challenge once
+            // (a number received just now, or the same number again = wrong password: no second try, so the camera
+            // does not lock this device out)
             val fresh = digestChallenge(r.challenges)
-            if (fresh == null || fresh.nonce == ch.nonce) {
+            if (!remembered || fresh == null || fresh.nonce == ch.nonce) {
                 auth.digest = false
                 auth.challenge = null
                 throw Fail(true)
@@ -725,18 +829,24 @@ object Onvif {
         return out.toByteArray()
     }
 
-    /** Downloads a picture, answering a Basic or Digest password request; null on failure. */
+    /**
+     * Downloads a picture, answering a Basic or Digest password request; null on failure.
+     * Throws a refused [Fail] when every user name / password given was refused.
+     */
     private fun image(url: String, creds: List<Pair<String, String>>): Bitmap? {
         var r = http(url, "GET", null, null, null, READ_MS)
+        var tried = false
         if (r.code == 401) {
             for ((u, p) in creds) {
                 if (u.isEmpty()) continue
                 val ch = digestChallenge(r.challenges)
                 val header = if (ch != null) digestHeader(ch, "GET", url, u, p) else basic(u, p)
                 r = http(url, "GET", null, null, header, READ_MS)
+                tried = true
                 if (r.code != 401) break
             }
         }
+        if (r.code == 401 && tried) throw Fail(true)
         if (r.code !in 200..299 || r.data.isEmpty()) return null
         return decode(r.data)
     }

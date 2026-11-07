@@ -55,6 +55,25 @@ import kotlin.concurrent.thread
 object Alerts {
     private val main = Handler(Looper.getMainLooper())
 
+    /** The last TV pop-up: camera id and when it appeared (System.currentTimeMillis()); the home screen may open that camera. */
+    @Volatile var lastPop: Pair<String, Long>? = null
+
+    /** Removes the TV motion pop-up if it is shown (the app itself came to the screen). Safe on any thread, never throws. */
+    fun hidePop() {
+        try {
+            val s = AlertService.instance ?: return
+            if (Looper.myLooper() == Looper.getMainLooper()) s.removePop() else main.post { s.removePop() }
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** A clock time in the app's language, 12 or 24 hours like the device, Latin digits: "10:32 م" / "10:32 PM". */
+    fun time(c: Context, at: Long): String {
+        val pattern = if (DateFormat.is24HourFormat(c)) "HH:mm" else "h:mm a"
+        val locale = if (L.en(c)) Locale.US else Locale.forLanguageTag("ar-u-nu-latn")
+        return SimpleDateFormat(pattern, locale).format(Date(at))
+    }
+
     /** Start or stop the alert service to match the settings and the cameras. Cheap, safe on the main thread, never throws. */
     fun refresh(c: Context) {
         try {
@@ -102,11 +121,12 @@ class AlertService : Service() {
         @Volatile var instance: AlertService? = null
 
         private const val FG_ID = 4101
+        private const val PAUSED_ID = 4102
         private const val CH_WATCH = "watch"
         private const val CH_MOTION = "motion"
         private const val COOLDOWN_MS = 60_000L
         private const val SHOW_MS = 30_000L
-        private const val LONGEST_MS = 5 * 60_000L // a camera stuck on "motion" does not stay on the TV for ever
+        private const val LONGEST_MS = 2 * 60_000L // a camera stuck on "motion" does not stay on the TV for ever
     }
 
     /** stopSelf() was called: a new start must create a fresh service. */
@@ -137,7 +157,7 @@ class AlertService : Service() {
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            popStatus?.text = L.t(this@AlertService, "تعذّر عرض الكاميرا، إعادة المحاولة…", "Cannot show the camera, retrying…")
+            popStatus?.text = L.t(this@AlertService, "تعذّر عرض الكاميرا، إعادة المحاولة…", "Could not show the camera, retrying…")
             popStatus?.visibility = View.VISIBLE
             main.removeCallbacks(retryPlay)
             main.postDelayed(retryPlay, 5000)
@@ -162,7 +182,17 @@ class AlertService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // first become a foreground service (Android requires it within seconds of the start), then listen
-        foreground(cameras().size)
+        val n = cameras().size
+        if (!foreground(n)) {
+            // not allowed now: Android restarted the service in the background after it closed the app
+            if (n > 0) paused()
+            stopNow()
+            return START_NOT_STICKY
+        }
+        try {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(PAUSED_ID)
+        } catch (_: Throwable) {
+        }
         reload()
         return START_STICKY
     }
@@ -224,36 +254,60 @@ class AlertService : Service() {
         stopSelf()
     }
 
-    /** The quiet notification that keeps the service alive: «مراقبة الحركة — كاميرتان». */
-    private fun foreground(n: Int) {
+    /** The quiet notification that keeps the service alive: «مراقبة الحركة — كاميرتان». false = Android did not allow it. */
+    private fun foreground(n: Int): Boolean = try {
+        val note = watchBuilder()
+            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setContentTitle(L.t(this, "مراقبة الحركة", "Watching for motion"))
+            .setContentText(Ui.cameras(this, n))
+            .setContentIntent(openApp())
+            .setOngoing(true)
+            .setShowWhen(false)
+            .build()
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(FG_ID, note, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } else {
+            startForeground(FG_ID, note)
+        }
+        true
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** «توقّفت تنبيهات الحركة — افتح التطبيق لتشغيلها»: a plain notification; tapping it opens the app, which starts them again. */
+    private fun paused() {
         try {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            val title = L.t(this, "مراقبة الحركة", "Watching for motion")
-            val b = if (Build.VERSION.SDK_INT >= 26) {
-                nm.createNotificationChannel(NotificationChannel(CH_WATCH, title, NotificationManager.IMPORTANCE_LOW))
-                Notification.Builder(this, CH_WATCH)
-            } else {
-                @Suppress("DEPRECATION") Notification.Builder(this)
-            }
-            val open = PendingIntent.getActivity(
-                this, 1,
-                Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-            )
-            val note = b.setSmallIcon(android.R.drawable.ic_menu_camera)
-                .setContentTitle(title)
-                .setContentText(Ui.cameras(this, n))
-                .setContentIntent(open)
-                .setOngoing(true)
-                .setShowWhen(false)
+            val note = watchBuilder()
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .setContentTitle(L.t(this, "توقّفت تنبيهات الحركة", "Motion alerts paused"))
+                .setContentText(L.t(this, "افتح التطبيق لتشغيلها", "Open the app to turn them back on"))
+                .setContentIntent(openApp())
+                .setAutoCancel(true)
                 .build()
-            if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(FG_ID, note, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-            } else {
-                startForeground(FG_ID, note)
-            }
+            nm.notify(PAUSED_ID, note)
         } catch (_: Throwable) {
+            // notifications not allowed (Android 13+: the permission is asked in Settings)
         }
+    }
+
+    /** A notification on the quiet "watching" channel. */
+    private fun watchBuilder(): Notification.Builder =
+        if (Build.VERSION.SDK_INT >= 26) {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.createNotificationChannel(
+                NotificationChannel(CH_WATCH, L.t(this, "مراقبة الحركة", "Watching for motion"), NotificationManager.IMPORTANCE_LOW),
+            )
+            Notification.Builder(this, CH_WATCH)
+        } else {
+            @Suppress("DEPRECATION") Notification.Builder(this)
+        }
+
+    /** Opens the app as it was (like its icon), not a second home screen. */
+    private fun openApp(): PendingIntent {
+        val i = packageManager.getLaunchIntentForPackage(packageName) ?: Intent(this, MainActivity::class.java)
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return PendingIntent.getActivity(this, 1, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
     // ---------------------------------------------------------------- motion (called on the camera's thread)
@@ -312,33 +366,23 @@ class AlertService : Service() {
 
     private fun postAlert(nm: NotificationManager, id: Int, cam: Camera, at: Long, pic: Bitmap?) {
         try {
-            val b = if (Build.VERSION.SDK_INT >= 26) {
-                nm.createNotificationChannel(
-                    NotificationChannel(CH_MOTION, L.t(this, "تنبيه الحركة", "Motion alert"), NotificationManager.IMPORTANCE_HIGH),
-                )
-                Notification.Builder(this, CH_MOTION)
-            } else {
-                @Suppress("DEPRECATION") Notification.Builder(this).setPriority(Notification.PRIORITY_HIGH).setDefaults(Notification.DEFAULT_ALL)
-            }
             val open = PendingIntent.getActivity(
                 this, id,
                 Watch.one(this, cam.id).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-            val n = name(cam)
-            b.setSmallIcon(android.R.drawable.ic_menu_camera)
-                .setContentTitle(L.t(this, "حركة عند «$n»", "Motion at “$n”"))
-                .setContentText(clock(at))
-                .setWhen(at)
-                .setShowWhen(true)
-                .setColor(Ui.GOLD)
-                .setCategory(Notification.CATEGORY_EVENT)
+            val b = motionBuilder(nm, cam, at)
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(pic != null) // adding the picture does not ring a second time
                 .setContentIntent(open)
             if (pic != null) {
                 b.setLargeIcon(pic)
                 b.setStyle(Notification.BigPictureStyle().bigPicture(pic).bigLargeIcon(null as Bitmap?))
+            }
+            if (Lock.enabled(this)) {
+                // the app is locked with a PIN: a locked phone shows only the words, never the picture
+                b.setVisibility(Notification.VISIBILITY_PRIVATE)
+                b.setPublicVersion(motionBuilder(nm, cam, at).build())
             }
             nm.notify(id, b.build())
         } catch (_: SecurityException) {
@@ -347,11 +391,29 @@ class AlertService : Service() {
         }
     }
 
-    /** «الساعة ١٠:٣٢ م» / "at 10:32 PM" (12 or 24 hours like the device). */
+    /** «حركة عند «الحوش»» and the time, without a picture. */
+    private fun motionBuilder(nm: NotificationManager, cam: Camera, at: Long): Notification.Builder {
+        val b = if (Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(
+                NotificationChannel(CH_MOTION, L.t(this, "تنبيه الحركة", "Motion alert"), NotificationManager.IMPORTANCE_HIGH),
+            )
+            Notification.Builder(this, CH_MOTION)
+        } else {
+            @Suppress("DEPRECATION") Notification.Builder(this).setPriority(Notification.PRIORITY_HIGH).setDefaults(Notification.DEFAULT_ALL)
+        }
+        val n = name(cam)
+        return b.setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setContentTitle(L.t(this, "حركة عند «$n»", "Motion at “$n”"))
+            .setContentText(clock(at))
+            .setWhen(at)
+            .setShowWhen(true)
+            .setColor(Ui.GOLD)
+            .setCategory(Notification.CATEGORY_EVENT)
+    }
+
+    /** «الساعة 10:32 م» / "at 10:32 PM" (12 or 24 hours like the device). */
     private fun clock(at: Long): String {
-        val en = L.en(this)
-        val pattern = if (DateFormat.is24HourFormat(this)) "HH:mm" else "h:mm a"
-        val t = SimpleDateFormat(pattern, if (en) Locale.US else Locale("ar")).format(Date(at))
+        val t = Alerts.time(this, at)
         return L.t(this, "الساعة $t", "at $t")
     }
 
@@ -392,7 +454,7 @@ class AlertService : Service() {
         video.clipToOutline = true
         root.addView(video, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
-        val status = Ui.text(ctx, L.t(this, "جاري الاتصال…", "Connecting…"), 13f, Ui.TEXT)
+        val status = Ui.text(ctx, L.t(this, "جارٍ الاتصال…", "Connecting…"), 13f, Ui.TEXT)
         status.gravity = Gravity.CENTER
         root.addView(status, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
@@ -425,12 +487,19 @@ class AlertService : Service() {
         )
         // bottom corner at the end of the reading direction (left in Arabic, right in English), inside the TV's safe area
         lp.gravity = Gravity.BOTTOM or (if (en) Gravity.RIGHT else Gravity.LEFT)
-        lp.x = (dm.widthPixels * 0.03f).toInt()
+        lp.x = (dm.widthPixels * 0.05f).toInt()
         lp.y = (dm.heightPixels * 0.05f).toInt()
         try {
             wm.addView(root, lp)
         } catch (_: Throwable) {
             return
+        }
+        Alerts.lastPop = Pair(cam.id, System.currentTimeMillis())
+        try {
+            // TalkBack says it too: the pop-up never takes the focus
+            val n = name(cam)
+            root.announceForAccessibility(L.t(this, "حركة عند «$n»", "Motion at “$n”"))
+        } catch (_: Throwable) {
         }
         pop = root
         popCam = cam
@@ -482,7 +551,7 @@ class AlertService : Service() {
         main.postDelayed(hideTick, SHOW_MS)
     }
 
-    /** 30 s after the last motion: gone, unless the camera still reports motion (then 30 s more, up to 5 minutes). */
+    /** 30 s after the last motion: gone, unless the camera still reports motion (then 30 s more, up to 2 minutes). */
     private fun tick() {
         val cam = popCam ?: return
         val shown = SystemClock.elapsedRealtime() - popSince
@@ -500,7 +569,8 @@ class AlertService : Service() {
         }
     }
 
-    private fun removePop() {
+    /** Removes the pop-up (also [Alerts.hidePop] when the app comes to the screen). Main thread. */
+    internal fun removePop() {
         main.removeCallbacks(hideTick)
         main.removeCallbacks(retryPlay)
         releasePlayer()

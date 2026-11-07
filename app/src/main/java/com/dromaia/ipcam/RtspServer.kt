@@ -1,5 +1,6 @@
 package com.dromaia.ipcam
 
+import android.os.SystemClock
 import android.util.Base64
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -21,7 +22,8 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * RTSP 1.0 with the video (H.264, RFC 6184) and the optional sound (AAC, RFC 3640) sent inside the same TCP
  * connection (interleaved, "$" frames); a request for UDP gets 461 so the player asks again for TCP.
- * Password: Digest (realm "ipcam"), Basic also accepted. Several viewers at once; a slow viewer only loses pictures
+ * Password: Digest only (realm "ipcam", a new one-time number for every connection), so the password never crosses
+ * the network; wrong passwords go through [Guard]. Several viewers at once; a slow viewer only loses pictures
  * itself (it waits for the next key picture), it never slows the others.
  *
  * Times given to [sendVideo] / [sendAudio] are microseconds of System.nanoTime() / 1000.
@@ -44,7 +46,6 @@ class RtspServer(
     private val clients = CopyOnWriteArrayList<Client>()
     @Volatile private var running = false
     private val random = SecureRandom()
-    private val nonce = hex(16)
     private val videoBase = random.nextInt().toLong() and 0xFFFFFFFFL
     private val audioBase = random.nextInt().toLong() and 0xFFFFFFFFL
 
@@ -215,14 +216,28 @@ class RtspServer(
 
     private fun acceptLoop(ss: ServerSocket) {
         while (running) {
-            val s = try { ss.accept() } catch (_: Exception) { break }
-            if (!running || clients.size >= MAX_CLIENTS) {
-                try { s.close() } catch (_: Exception) {}
+            val s = try {
+                ss.accept()
+            } catch (_: Throwable) {
+                if (!running || ss.isClosed) break
+                // a passing problem (too many open files…): the server keeps going
+                try { Thread.sleep(200) } catch (_: InterruptedException) { break }
                 continue
             }
-            val c = Client(s)
-            clients.add(c)
-            c.begin()
+            var c: Client? = null
+            try {
+                if (!running || clients.size >= MAX_CLIENTS) {
+                    try { s.close() } catch (_: Exception) {}
+                    continue
+                }
+                val nc = Client(s)
+                c = nc
+                clients.add(nc)
+                nc.begin()
+            } catch (_: Throwable) {
+                // no memory or no thread for this viewer: he is turned away, the others keep watching
+                if (c != null) c.close() else try { s.close() } catch (_: Exception) {}
+            }
         }
     }
 
@@ -287,8 +302,10 @@ class RtspServer(
         @Volatile private var slowSince = 0L
         private var authed = false
         private var badTries = 0
+        private var refusedNow = false // the last sign-in was refused by [Guard] without looking at the password
         private var describedAudio: Boolean? = null
         private val session = hex(4).uppercase()
+        private val nonce = hex(16) // this connection's one-time number for the password (Digest)
 
         fun begin() {
             val r = Thread({ readLoop() }, "rtsp-in")
@@ -417,6 +434,9 @@ class RtspServer(
             try {
                 socket.tcpNoDelay = true
                 socket.keepAlive = true
+                // players say something at least every 30 s (Media3 sends OPTIONS at half the 60 s session timeout):
+                // a connection silent for 90 s is gone, and a connection that never asks for anything does not stay
+                socket.soTimeout = 90_000
                 val input = BufferedInputStream(socket.getInputStream(), 8192)
                 while (!closed) {
                     val req = readRequest(input) ?: break
@@ -504,7 +524,7 @@ class RtspServer(
 
         private fun describe(req: Request, cseq: String) {
             val path = path(req.uri) ?: return reply(404, cseq)
-            if (!authOk(req)) return challenge(cseq)
+            if (!authOk(req)) return refuse(cseq)
             viewer.path = path
             val local = socket.localAddress?.hostAddress ?: "0.0.0.0"
             val (text, withAudio) = sdp(local) ?: return reply(503, cseq)
@@ -514,7 +534,7 @@ class RtspServer(
 
         private fun setup(req: Request, cseq: String) {
             val path = path(req.uri) ?: return reply(404, cseq)
-            if (!authOk(req)) return challenge(cseq)
+            if (!authOk(req)) return refuse(cseq)
             viewer.path = path
             val transport = req.headers["transport"] ?: ""
             if (!transport.contains("RTP/AVP/TCP", ignoreCase = true)) return reply(461, cseq) // the player then asks for TCP
@@ -531,7 +551,7 @@ class RtspServer(
         }
 
         private fun play(req: Request, cseq: String) {
-            if (!authOk(req)) return challenge(cseq)
+            if (!authOk(req)) return refuse(cseq)
             val v = video
             val a = audio
             if (v == null && a == null) return reply(455, cseq)
@@ -552,19 +572,21 @@ class RtspServer(
 
         private fun authOk(req: Request): Boolean {
             if (authed) return true
-            val pass = password()
+            refusedNow = false
+            // Digest only: Basic would send the password itself over the Wi-Fi
             val h = req.headers["authorization"] ?: return false
-            val ok = try {
-                when {
-                    h.startsWith("Basic ", ignoreCase = true) -> {
-                        val s = String(Base64.decode(h.substring(6).trim(), Base64.DEFAULT), Charsets.UTF_8)
-                        same(s.substringAfter(':', ""), pass)
-                    }
-                    h.startsWith("Digest ", ignoreCase = true) -> digestOk(req, h.substring(7), pass)
-                    else -> false
-                }
-            } catch (_: Exception) {
-                false
+            if (!h.startsWith("Digest ", ignoreCase = true)) return false
+            val p = HashMap<String, String>()
+            for (m in Regex("(\\w+)\\s*=\\s*(?:\"([^\"]*)\"|([^,\\s]+))").findAll(h.substring(7))) {
+                p[m.groupValues[1].lowercase()] = m.groupValues[2].ifEmpty { m.groupValues[3] }
+            }
+            // an old or foreign one-time number: a new challenge; no password was looked at, so it is not a wrong try
+            if (p["nonce"] != nonce) return false
+            val pass = password()
+            val ok = Guard.check { pass.isNotEmpty() && digestOk(req, p, pass) }
+            if (ok == null) {
+                refusedNow = true
+                return false
             }
             if (ok) {
                 authed = true
@@ -576,20 +598,22 @@ class RtspServer(
             return ok
         }
 
-        private fun digestOk(req: Request, params: String, pass: String): Boolean {
-            val p = HashMap<String, String>()
-            for (m in Regex("(\\w+)\\s*=\\s*(?:\"([^\"]*)\"|([^,\\s]+))").findAll(params)) {
-                p[m.groupValues[1].lowercase()] = m.groupValues[2].ifEmpty { m.groupValues[3] }
-            }
-            if (p["nonce"] != nonce) return false
+        private fun digestOk(req: Request, p: Map<String, String>, pass: String): Boolean {
             val user = p["username"] ?: ""
-            val uri = p["uri"] ?: req.uri
+            val uri = p["uri"] ?: return false
+            // the answer must be for this request (the player may write the link with or without the address)
+            if (uriPath(uri) != uriPath(req.uri)) return false
             val ha1 = md5("$user:$REALM:$pass")
             val ha2 = md5("${req.method}:$uri")
             val qop = p["qop"]
             val expected = if (qop.isNullOrEmpty()) md5("$ha1:$nonce:$ha2")
             else md5("$ha1:$nonce:${p["nc"] ?: ""}:${p["cnonce"] ?: ""}:$qop:$ha2")
             return same(expected, (p["response"] ?: "").lowercase())
+        }
+
+        /** Not signed in: ask for the password, or, while [Guard] refuses everyone, say when to come back. */
+        private fun refuse(cseq: String) {
+            if (refusedNow) reply(503, cseq, listOf("Retry-After: ${Guard.waitSeconds()}")) else challenge(cseq)
         }
 
         private fun challenge(cseq: String) = reply(401, cseq, listOf("WWW-Authenticate: Digest realm=\"$REALM\", nonce=\"$nonce\""))
@@ -637,6 +661,18 @@ class RtspServer(
             return if (at >= 0) uri.substring(0, i + 3) + rest.substring(at + 1) else uri
         }
 
+        /** The path of a link, to compare two links leniently: "rtsp://ipcam:1234@host:8554/live/" → "/live". */
+        private fun uriPath(uri: String): String {
+            var p = uri.trim()
+            val i = p.indexOf("://")
+            if (i >= 0) {
+                val rest = p.substring(i + 3)
+                val slash = rest.indexOf('/')
+                p = if (slash < 0) "" else rest.substring(slash)
+            }
+            return p.substringBefore('?').trimEnd('/').lowercase()
+        }
+
         /** The session link given back to the player: without password, query or trailing "/". */
         private fun base(uri: String): String = clean(uri).substringBefore('?').trimEnd('/')
 
@@ -669,6 +705,52 @@ class RtspServer(
             SecureRandom().nextBytes(b)
             return b.joinToString("") { String.format(java.util.Locale.US, "%02x", it.toInt() and 0xFF) }
         }
+    }
+}
+
+/**
+ * One guard against password guessing for the whole camera mode (video and talk): after every 5 wrong passwords,
+ * from any device, every sign-in is refused without looking at the password, for 1 minute, then 2, 3… (at most 15).
+ * Wrong passwords are forgotten after an hour without any.
+ */
+object Guard {
+    private const val EVERY = 5
+    private const val STEP_MS = 60_000L
+    private const val LONGEST_MS = 15 * 60_000L
+    private const val FORGET_MS = 60 * 60_000L
+
+    private var fails = 0
+    private var lastFail = 0L
+    private var until = 0L
+
+    /** A password may be checked now (false = refused, too many wrong passwords lately). */
+    @Synchronized
+    fun ok(): Boolean = SystemClock.elapsedRealtime() >= until
+
+    /** One more wrong password. */
+    @Synchronized
+    fun bad() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastFail > FORGET_MS) fails = 0
+        lastFail = now
+        fails++
+        if (fails % EVERY == 0) until = now + minOf(STEP_MS * (fails / EVERY), LONGEST_MS)
+    }
+
+    /** Seconds until passwords are checked again (0 = now). */
+    @Synchronized
+    fun waitSeconds(): Long = maxOf(0L, (until - SystemClock.elapsedRealtime() + 999) / 1000)
+
+    /**
+     * Checks a password through the guard, all at once (several connections cannot slip in together):
+     * true = right, false = wrong (counted), null = refused without checking.
+     */
+    @Synchronized
+    fun check(right: () -> Boolean): Boolean? {
+        if (!ok()) return null
+        val r = try { right() } catch (_: Exception) { false }
+        if (!r) bad()
+        return r
     }
 }
 

@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -23,8 +24,10 @@ import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import androidx.media3.ui.PlayerView
 
 /**
- * One camera on screen: its live video, its name, a small «جاري الاتصال…» line, and the reason when it cannot
- * connect (then it retries by itself every 5 seconds).
+ * One camera on screen: its live video, its name, a small «جارٍ الاتصال…» line, and the reason when it cannot
+ * connect (then it retries by itself every 5 seconds, except after a wrong password: cameras lock the user after a
+ * few failed logins, so then it waits for a tap / OK, see [retryOnce]).
+ * TalkBack reads the reason too (the tile's description); one camera alone announces it by itself (live region).
  * The picture is drawn on a TextureView (res/layout/player_texture.xml), so it can be zoomed with the fingers
  * (setZoomable), saved as a photo (snapshot) and recorded (Recorder reads [textureView]).
  * [act] is any Context (an Activity normally).
@@ -39,10 +42,15 @@ class Tile(
     val view = FrameLayout(act)
     private val video = LayoutInflater.from(act).inflate(R.layout.player_texture, view, false) as PlayerView
     private val status = Ui.text(act, "", 15f, Ui.TEXT) // why it does not play
-    private val line = Ui.text(act, "", 12f, Ui.TEXT)   // «جاري الاتصال…»
+    private val line = Ui.text(act, "", 12f, Ui.TEXT)   // «جارٍ الاتصال…»
     private var player: ExoPlayer? = null
     private val handler = Handler(Looper.getMainLooper())
     private val retry = Runnable { start() }
+    private var said = "" // what TalkBack reads after the name now ("" = playing)
+
+    /** true after a wrong user name or password: no automatic retry until [retryOnce] (a tap / OK). */
+    var authFailed = false
+        private set
 
     /** true once the first picture arrived (a photo or a recording can be taken). */
     var hasPicture = false
@@ -68,6 +76,7 @@ class Tile(
             if (state == Player.STATE_READY) {
                 status.visibility = View.GONE
                 line.visibility = View.GONE
+                say("")
             } else if (state == Player.STATE_ENDED) {
                 // a live stream never ends by itself: the camera stopped sending
                 retryLater(L.t(act, "توقّف البث من الكاميرا", "The camera stopped sending"))
@@ -78,10 +87,22 @@ class Tile(
             hasPicture = true
             status.visibility = View.GONE
             line.visibility = View.GONE
+            say("")
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            retryLater(reason(act, error))
+            Log.w("ipcam", "play error " + error.errorCodeName) // the code for the log only, never on screen
+            if (isAuth(error)) {
+                // a wrong password is not tried again by itself (the camera would lock the user out)
+                authFailed = true
+                handler.removeCallbacks(retry)
+                showError(
+                    reason(act, error) + "\n" +
+                        L.t(act, "عدّل الكاميرا (✎) وصحّح كلمة المرور", "Edit the camera (✎) and fix the password"),
+                )
+            } else {
+                retryLater(reason(act, error))
+            }
         }
     }
 
@@ -129,6 +150,8 @@ class Tile(
         view.foreground = Ui.states(act, Color.TRANSPARENT, 0x33FFFFFF, 4)
         view.contentDescription = cam.name
         view.setOnClickListener { onTap() }
+        // one camera alone: TalkBack says by itself when it cannot play (grid tiles stay quiet, four would chatter)
+        if (!showName) view.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
 
         video.setKeepContentOnPlayerReset(true)
         video.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
@@ -143,7 +166,8 @@ class Tile(
 
         status.gravity = Gravity.CENTER
         val p = Ui.dp(act, 16)
-        status.setPadding(p, p, p, p)
+        val side = if (Device.isTv(act)) Ui.dp(act, 48) else p // TV: away from the screen's edges
+        status.setPadding(side, p, side, p)
         status.setShadowLayer(6f, 0f, 0f, Color.BLACK)
         status.visibility = View.GONE
         view.addView(status, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -172,6 +196,14 @@ class Tile(
         line.visibility = View.GONE
         status.text = msg
         status.visibility = View.VISIBLE
+        say(msg)
+    }
+
+    // what TalkBack reads for this tile: the name, and the reason while it does not play ("" = playing)
+    private fun say(msg: String) {
+        if (msg == said) return
+        said = msg
+        view.contentDescription = if (msg.isEmpty()) cam.name else cam.name + ": " + msg
     }
 
     private fun showLine(msg: String) {
@@ -181,19 +213,20 @@ class Tile(
     }
 
     private fun retryLater(msg: String) {
-        showError(msg + "\n" + L.t(act, "إعادة المحاولة بعد ٥ ثوانٍ…", "Retrying in 5 seconds…"))
+        showError(msg + "\n" + L.t(act, "إعادة المحاولة بعد 5 ثوانٍ…", "Retrying in 5 seconds…"))
         handler.removeCallbacks(retry)
         handler.postDelayed(retry, 5000)
     }
 
     fun start() {
         stop()
+        authFailed = false
         val url = cam.rtsp(main)
         if (!url.startsWith("rtsp://", ignoreCase = true)) {
             showError(L.t(act, "رابط البث غير صحيح. عدّل الكاميرا", "The stream link is not valid. Edit the camera"))
             return
         }
-        showLine(L.t(act, "جاري الاتصال…", "Connecting…"))
+        showLine(L.t(act, "جارٍ الاتصال…", "Connecting…"))
         // small buffer: the picture stays close to live
         val load = DefaultLoadControl.Builder().setBufferDurationsMs(1000, 3000, 250, 500).build()
         val p = ExoPlayer.Builder(act).setLoadControl(load).build()
@@ -209,6 +242,13 @@ class Tile(
         p.prepare()
         video.player = p
         player = p
+    }
+
+    /** After a wrong password: try once more (a tap / OK). false = it was not waiting for that. */
+    fun retryOnce(): Boolean {
+        if (!authFailed) return false
+        start()
+        return true
     }
 
     fun stop() {
@@ -326,23 +366,34 @@ class Tile(
     }
 
     companion object {
-        /** The reason in plain words (Arabic or English). */
-        fun reason(c: Context, e: PlaybackException): String {
+        // every message of the error and its causes, to recognise the camera's answer
+        private fun allText(e: PlaybackException): String {
             val all = StringBuilder()
             var t: Throwable? = e
             while (t != null) {
                 all.append(t.message ?: "").append(' ')
                 t = t.cause
             }
-            val m = all.toString()
+            return all.toString()
+        }
+
+        /** The camera refused the user name or password (RTSP 401). */
+        fun isAuth(e: PlaybackException): Boolean {
+            val m = allText(e)
+            return Regex("""\b401\b""").containsMatchIn(m) || m.contains("unauthorized", ignoreCase = true)
+        }
+
+        /** The reason in plain words (Arabic or English). */
+        fun reason(c: Context, e: PlaybackException): String {
+            val m = allText(e)
             return when {
-                m.contains("401") || m.contains("unauthorized", ignoreCase = true) ->
-                    L.t(c, "اسم المستخدم أو كلمة المرور غير صحيحة", "Wrong user name or password")
+                isAuth(e) ->
+                    L.t(c, "اسم المستخدم أو كلمة المرور غير صحيحة", "Wrong username or password")
                 m.contains("404") || m.contains("454") ->
                     L.t(
                         c,
-                        "الكاميرا ردّت لكن رابط البث غير صحيح (تأكد من النوع ورقم القناة)",
-                        "The camera answered but the stream link is wrong (check the make and the channel number)",
+                        "ردّت الكاميرا، لكنّ رابط البث غير صحيح (تأكد من نوع الكاميرا ورقم القناة)",
+                        "The camera answered, but the stream link is wrong (check the camera type and the channel number)",
                     )
                 e.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
                     e.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
@@ -350,7 +401,7 @@ class Tile(
                     L.t(
                         c,
                         "تعذّر الوصول إلى الكاميرا. تأكد أنها تعمل وأن الجهاز على شبكة الواي فاي نفسها",
-                        "Cannot reach the camera. Make sure it is on and this device is on the same Wi-Fi",
+                        "Could not reach the camera. Make sure it is on and this device is on the same Wi-Fi",
                     )
                 e.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
                     e.errorCode == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
@@ -359,10 +410,14 @@ class Tile(
                     e.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED ->
                     L.t(
                         c,
-                        "الجهاز لا يدعم صيغة هذا البث. جرّب «جودة خفيفة»، أو غيّر الترميز في الكاميرا إلى H.264",
-                        "This device cannot play this stream format. Try «Light quality», or set the camera's encoding to H.264",
+                        "الجهاز لا يدعم صيغة هذا البث. جرّب «جودة خفيفة» (اضغط زر الجودة)، أو غيّر الترميز في الكاميرا إلى H.264",
+                        "This device cannot play this stream format. Try “Low quality” (press the quality button), or set the camera's encoding to H.264",
                     )
-                else -> L.t(c, "تعذّر التشغيل (${e.errorCodeName})", "Cannot play (${e.errorCodeName})")
+                else -> L.t(
+                    c,
+                    "تعذّر تشغيل البث. تأكد من نوع الكاميرا ورقم القناة.",
+                    "Could not play the stream. Check the camera type and channel.",
+                )
             }
         }
     }

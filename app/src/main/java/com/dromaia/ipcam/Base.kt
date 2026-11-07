@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.View
@@ -26,11 +27,25 @@ abstract class Base : Activity() {
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
         window.decorView.layoutDirection = if (L.en(this)) View.LAYOUT_DIRECTION_LTR else View.LAYOUT_DIRECTION_RTL
+        privateInRecents()
     }
 
     override fun onResume() {
+        // super.onResume() runs App's onActivityResumed first (Lock.resumed), so the check below sees the new state
         super.onResume()
+        privateInRecents()
         if (lockable && Lock.needed(this)) startActivity(Intent(this, LockActivity::class.java))
+    }
+
+    // With the PIN lock on, the recent-apps screen shows no picture of the cameras (Android 13+).
+    // Not FLAG_SECURE: that would also block casting the screen and taking screenshots.
+    private fun privateInRecents() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            try {
+                setRecentsScreenshotEnabled(!Lock.enabled(this))
+            } catch (_: Exception) {
+            }
+        }
     }
 }
 
@@ -45,19 +60,29 @@ object Watch {
     fun tour(c: Context, group: String? = null) = all(c, group).putExtra(TOUR, true)
 }
 
-// The optional PIN: asked when the app opens, and again after it was in the background for more than 30 seconds
+// The optional PIN: asked when the app opens, and again when the app comes back after more than 30 seconds away.
+// "Away" = no screen of the app in front (every screen is paused): home button, another app, screen off,
+// the live view in picture-in-picture. Moving between the app's own screens (or rotating) takes a moment only.
 object Lock {
-    private const val AWAY_MS = 30_000L
+    const val AWAY_MS = 30_000L
     @Volatile var unlocked = false
-    @Volatile var backgroundAt = 0L
-    @Volatile var started = 0
+    @Volatile var backgroundAt = 0L // when the last screen was paused (0 = a screen of the app is in front)
+    @Volatile var started = 0       // screens started (visible): the TV motion pop-up stays away while the app shows
 
     fun enabled(c: Context) = Prefs.pinHash(c).isNotEmpty()
 
-    fun needed(c: Context): Boolean {
-        if (!enabled(c)) return false
-        if (unlocked && backgroundAt > 0 && started <= 1 && SystemClock.elapsedRealtime() - backgroundAt > AWAY_MS) unlocked = false
-        return !unlocked
+    fun needed(c: Context): Boolean = enabled(c) && !unlocked
+
+    /** A screen of the app was paused: the time away starts now. */
+    fun paused() {
+        backgroundAt = SystemClock.elapsedRealtime()
+    }
+
+    /** A screen of the app was resumed: after more than 30 seconds away the PIN is asked again. */
+    fun resumed() {
+        val at = backgroundAt
+        if (at > 0 && SystemClock.elapsedRealtime() - at > AWAY_MS) unlocked = false
+        backgroundAt = 0L
     }
 
     fun hash(pin: String): String =
@@ -73,6 +98,9 @@ object Lock {
 
     fun set(c: Context, pin: String?) {
         Prefs.put(c, "pinHash", if (pin.isNullOrEmpty()) "" else hash(pin))
+        // a new PIN (or none): the count of wrong tries starts again
+        Prefs.put(c, "pinWrong", 0)
+        Prefs.putLong(c, "pinWait", 0L)
         open()
     }
 }
@@ -83,16 +111,20 @@ class App : Application() {
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityStarted(a: Activity) {
                 Lock.started++
+                // the app is opened: the TV motion pop-up (if any) goes away
+                try {
+                    Alerts.hidePop()
+                } catch (_: Exception) {
+                }
             }
 
             override fun onActivityStopped(a: Activity) {
                 Lock.started = maxOf(0, Lock.started - 1)
-                if (Lock.started == 0) Lock.backgroundAt = SystemClock.elapsedRealtime()
             }
 
+            override fun onActivityResumed(a: Activity) = Lock.resumed()
+            override fun onActivityPaused(a: Activity) = Lock.paused()
             override fun onActivityCreated(a: Activity, b: Bundle?) {}
-            override fun onActivityResumed(a: Activity) {}
-            override fun onActivityPaused(a: Activity) {}
             override fun onActivitySaveInstanceState(a: Activity, b: Bundle) {}
             override fun onActivityDestroyed(a: Activity) {}
         })

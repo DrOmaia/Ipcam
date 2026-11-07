@@ -2,6 +2,7 @@ package com.dromaia.ipcam
 
 import android.app.AlertDialog
 import android.os.Bundle
+import android.text.InputFilter
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -53,11 +54,9 @@ class TransferActivity : Base() {
     private fun buildReceive() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         col.gravity = Gravity.CENTER_HORIZONTAL
-        col.addView(Ui.text(this, t("استقبال الكاميرات", "Receive cameras"), 26f, Ui.TEXT, true))
-        val code = (1000..9999).random().toString()
-        val codeView = Ui.text(this, code.toCharArray().joinToString("  "), 56f, Ui.GOLD, true)
+        col.addView(Ui.heading(Ui.text(this, t("استقبال الكاميرات", "Receive cameras"), 26f, Ui.TEXT, true)))
+        val codeView = Ui.text(this, "", 56f, Ui.GOLD, true)
         codeView.gravity = Gravity.CENTER
-        codeView.contentDescription = t("الرمز ", "Code ") + code.toCharArray().joinToString(" ")
         col.addView(codeView, Ui.below(this, 24))
         val how = Ui.text(
             this,
@@ -72,21 +71,52 @@ class TransferActivity : Base() {
         col.addView(how, Ui.below(this, 20))
         val status = Ui.text(this, t("في الانتظار…", "Waiting…"), 18f, Ui.TEXT)
         status.gravity = Gravity.CENTER
+        status.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         col.addView(status, Ui.below(this, 28))
-        val done = Ui.button(this, t("تم", "Done"), primary = true) { finish() }
+        // while waiting: «Cancel»; once cameras arrive it becomes the gold «Done» and the remote goes to it
+        val done = Ui.button(this, t("إلغاء", "Cancel")) { finish() }
         col.addView(done, Ui.below(this, 24))
 
-        val r = Transfer.Receiver(this, code) { from, n ->
+        val r = Transfer.Receiver(this, Transfer.newCode()) { from, n ->
             runOnUiThread {
+                if (isFinishing) return@runOnUiThread
                 status.text = t("✓ وصلت ", "✓ Received ") + Ui.cameras(this, n) +
                     (if (from.isNotEmpty()) t(" من «$from»", " from “$from”") else "")
                 status.setTextColor(Ui.GREEN)
+                done.text = t("تم", "Done")
+                done.background = Ui.states(this, Ui.GOLD, Ui.GOLD_DOWN)
+                done.setTextColor(Ui.BG)
                 done.requestFocus()
             }
         }
-        if (!r.start()) status.text = t("تعذّر بدء الاستقبال. تأكد من الاتصال بالواي فاي.", "Could not start. Check the Wi-Fi connection.")
+        r.onCode = { code, wrong ->
+            runOnUiThread {
+                if (!isFinishing) {
+                    if (r.isStopped) {
+                        codeView.setTextColor(Ui.MUTED)
+                        status.text = t("توقّف الاستقبال بعد 5 محاولات برمز غير صحيح. افتح هذه الشاشة من جديد.",
+                            "Receiving stopped after 5 tries with a wrong code. Open this screen again.")
+                        status.setTextColor(Ui.RED)
+                    } else {
+                        showCode(codeView, code)
+                        if (wrong) {
+                            status.text = t("كُتب رمز غير صحيح على الجهاز الآخر. اكتب الرمز الجديد.",
+                                "A wrong code was typed on the other device. Type the new code.")
+                            status.setTextColor(Ui.TEXT)
+                        }
+                    }
+                }
+            }
+        }
+        showCode(codeView, r.code)
+        if (!r.start()) status.text = t("تعذّر بدء الاستقبال. تأكد من الاتصال بالواي فاي.", "Could not start receiving. Check the Wi-Fi connection.")
         receiver = r
         done.requestFocus()
+    }
+
+    private fun showCode(v: TextView, code: String) {
+        v.text = code.toCharArray().joinToString("  ")
+        v.contentDescription = t("الرمز ", "Code ") + code.toCharArray().joinToString(" ")
     }
 
     // ---------- send
@@ -96,12 +126,12 @@ class TransferActivity : Base() {
     private val checks = ArrayList<Pair<CheckBox, Camera>>()
 
     private fun buildSend() {
-        col.addView(Ui.text(this, t("إرسال الكاميرات", "Send cameras"), 26f, Ui.TEXT, true))
+        col.addView(Ui.heading(Ui.text(this, t("إرسال الكاميرات", "Send cameras"), 26f, Ui.TEXT, true)))
         col.addView(
             Ui.text(
                 this,
                 t(
-                    "على الجهاز الآخر (التلفزيون أو جوال أحد العائلة): الإعدادات ← «استقبال الكاميرات». يجب أن يكون الجهازان على نفس الواي فاي.",
+                    "على الجهاز الآخر (التلفزيون أو جوال أحد أفراد العائلة): الإعدادات ← «استقبال الكاميرات». يجب أن يكون الجهازان على نفس الواي فاي.",
                     "On the other device (the TV or a family phone): Settings → “Receive cameras”. Both must be on the same Wi-Fi.",
                 ),
                 15f, Ui.MUTED,
@@ -109,31 +139,28 @@ class TransferActivity : Base() {
             Ui.below(this, 8),
         )
 
-        col.addView(Ui.text(this, t("الكاميرات التي تُرسل", "Cameras to send"), 17f, Ui.TEXT, true), Ui.below(this, 20))
-        val cams = Store.all(this)
-        if (cams.isEmpty()) {
-            col.addView(Ui.text(this, t("لا توجد كاميرات في هذا الجهاز.", "There are no cameras on this device."), 15f, Ui.MUTED), Ui.below(this, 6))
-        }
-        for (cam in cams) {
-            val cb = CheckBox(this)
-            cb.text = cam.name + (if (cam.group.isNotEmpty()) "  ·  " + cam.group else "")
-            cb.textSize = 16f * Ui.scale(this)
-            cb.setTextColor(Ui.TEXT)
-            cb.isChecked = true
-            cb.minHeight = Ui.dp(this, 48)
-            checks.add(Pair(cb, cam))
-            col.addView(cb, Ui.below(this, 2))
-        }
-
-        col.addView(Ui.text(this, t("الأجهزة المستقبِلة", "Receiving devices"), 17f, Ui.TEXT, true), Ui.below(this, 24))
+        // the receiving devices first: the camera list can be long
+        col.addView(Ui.heading(Ui.text(this, t("الأجهزة المستقبِلة", "Receiving devices"), 17f, Ui.TEXT, true)), Ui.below(this, 20))
         searchStatus = Ui.text(this, "", 15f, Ui.MUTED)
+        searchStatus.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         col.addView(searchStatus, Ui.below(this, 6))
         progress = ProgressBar(this)
         col.addView(progress, LinearLayout.LayoutParams(Ui.dp(this, 36), Ui.dp(this, 36)).also { it.topMargin = Ui.dp(this, 6) })
         peerList = LinearLayout(this)
         peerList.orientation = LinearLayout.VERTICAL
         col.addView(peerList, Ui.below(this, 6))
-        col.addView(Ui.button(this, t("بحث مرة ثانية", "Search again")) { search() }, Ui.below(this, 16))
+        col.addView(Ui.button(this, t("إعادة البحث", "Search again")) { search() }, Ui.below(this, 16))
+
+        col.addView(Ui.heading(Ui.text(this, t("الكاميرات التي تُرسل", "Cameras to send"), 17f, Ui.TEXT, true)), Ui.below(this, 24))
+        val cams = Store.all(this)
+        if (cams.isEmpty()) {
+            col.addView(Ui.text(this, t("لا توجد كاميرات في هذا الجهاز.", "There are no cameras on this device."), 15f, Ui.MUTED), Ui.below(this, 6))
+        }
+        for (cam in cams) {
+            val cb = Ui.check(this, cam.name + (if (cam.group.isNotEmpty()) "  ·  " + cam.group else ""), true)
+            checks.add(Pair(cb, cam))
+            col.addView(cb, Ui.below(this, 2))
+        }
         search()
     }
 
@@ -143,7 +170,7 @@ class TransferActivity : Base() {
         peers.clear()
         peerList.removeAllViews()
         progress.visibility = View.VISIBLE
-        searchStatus.text = t("أبحث عن الأجهزة على الواي فاي…", "Looking for devices on the Wi-Fi…")
+        searchStatus.text = t("جارٍ البحث عن الأجهزة على الواي فاي…", "Looking for devices on the Wi-Fi…")
         thread {
             Transfer.discover(this, 8000) { peer -> runOnUiThread { addPeer(peer) } }
             runOnUiThread {
@@ -151,7 +178,7 @@ class TransferActivity : Base() {
                 if (isFinishing) return@runOnUiThread
                 progress.visibility = View.GONE
                 searchStatus.text = if (peers.isEmpty())
-                    t("لم أجد جهازًا. افتح «استقبال الكاميرات» على الجهاز الآخر ثم «بحث مرة ثانية».",
+                    t("لم أجد جهازًا. افتح «استقبال الكاميرات» على الجهاز الآخر ثم «إعادة البحث».",
                         "No device found. Open “Receive cameras” on the other device, then “Search again”.")
                 else t("اختر الجهاز:", "Choose the device:")
             }
@@ -169,38 +196,46 @@ class TransferActivity : Base() {
         if (peers.size == 1) searchStatus.text = t("اختر الجهاز:", "Choose the device:")
     }
 
-    private fun askCode(peer: Transfer.Peer) {
+    /** The code dialog; [again] = the last code was wrong (the other device now shows a new one). */
+    private fun askCode(peer: Transfer.Peer, again: Boolean = false) {
         val chosen = checks.filter { it.first.isChecked }.map { it.second }
         if (chosen.isEmpty()) {
             toast(t("اختر كاميرا واحدة على الأقل.", "Choose at least one camera."))
             return
         }
-        val field = Ui.field(this, t("الرمز الظاهر على الجهاز", "The code shown on the device"), InputType.TYPE_CLASS_NUMBER)
+        val field = Ui.field(this, t("الرمز الظاهر على الجهاز الآخر", "The code shown on the other device"), InputType.TYPE_CLASS_NUMBER)
+        field.filters = arrayOf<InputFilter>(InputFilter.LengthFilter(4))
         val box = LinearLayout(this)
         val p = Ui.dp(this, 20)
         box.setPadding(p, p / 2, p, 0)
         box.addView(field, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        AlertDialog.Builder(this)
+        val b = AlertDialog.Builder(this)
             .setTitle(t("إرسال إلى «${peer.name}»", "Send to “${peer.name}”"))
             .setView(box)
-            .setPositiveButton(t("إرسال", "Send")) { _, _ ->
-                val code = field.text.toString().trim()
-                thread {
-                    val r = Transfer.send(this, peer, code, chosen)
-                    runOnUiThread {
-                        toast(
-                            when (r) {
-                                "ok" -> t("✓ أُرسلت ", "✓ Sent ") + Ui.cameras(this, chosen.size)
-                                "bad" -> t("الرمز غير صحيح. انظر إلى الرمز على الجهاز الآخر.", "Wrong code. Check the code on the other device.")
-                                else -> t("تعذّر الإرسال. تأكد أن «استقبال الكاميرات» مفتوح على الجهاز الآخر.", "Could not send. Make sure “Receive cameras” is open on the other device.")
-                            }
-                        )
+            .setPositiveButton(t("إرسال", "Send")) { _, _ -> send(peer, field.text.toString().trim(), chosen) }
+            .setNegativeButton(t("إلغاء", "Cancel"), null)
+        if (again) b.setMessage(t("الرمز غير صحيح. اكتب الرمز الظاهر الآن على الجهاز الآخر.", "Wrong code. Type the code now shown on the other device."))
+        val dialog = b.create()
+        // the keyboard opens with the dialog (also on the TV)
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        dialog.show()
+        field.requestFocus()
+    }
+
+    private fun send(peer: Transfer.Peer, code: String, chosen: List<Camera>) {
+        thread {
+            val r = Transfer.send(this, peer, code, chosen)
+            runOnUiThread {
+                if (!isFinishing) {
+                    when (r) {
+                        "ok" -> toast(t("✓ أُرسلت ", "✓ Sent ") + Ui.cameras(this, chosen.size))
+                        "bad" -> askCode(peer, again = true)
+                        else -> toast(t("تعذّر الإرسال. تأكد أن «استقبال الكاميرات» مفتوح على الجهاز الآخر.",
+                            "Could not send. Make sure “Receive cameras” is open on the other device."))
                     }
                 }
             }
-            .setNegativeButton(t("إلغاء", "Cancel"), null)
-            .show()
-        field.requestFocus()
+        }
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()

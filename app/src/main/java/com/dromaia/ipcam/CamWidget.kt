@@ -38,6 +38,7 @@ class CamWidget : AppWidgetProvider() {
             val rv = RemoteViews(ctx.packageName, R.layout.widget_cams)
             val cams = Store.all(ctx)
             rv.setTextViewText(R.id.btn0, L.t(ctx, "▦ كل الكاميرات", "▦ All cameras"))
+            rv.setContentDescription(R.id.btn0, L.t(ctx, "كل الكاميرات", "All cameras")) // TalkBack: without the ▦
             rv.setOnClickPendingIntent(
                 R.id.btn0,
                 if (cams.isEmpty()) open(ctx, 100, Intent(ctx, MainActivity::class.java)) else open(ctx, 100, Watch.all(ctx)),

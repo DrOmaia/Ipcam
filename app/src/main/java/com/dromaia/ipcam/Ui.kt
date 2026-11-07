@@ -2,12 +2,20 @@ package com.dromaia.ipcam
 
 import android.app.Activity
 import android.content.Context
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.StateListDrawable
+import android.os.Build
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
+import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -54,14 +62,46 @@ object Ui {
         return d
     }
 
-    // background with a gold ring when chosen with the TV remote, darker while pressed
+    // background with a gold ring when chosen with the TV remote, darker while pressed.
+    // A gold button gets a cream ring with a navy line inside it instead (a gold ring would not show on gold).
+    // The ring is 4 dp on a TV (seen from the sofa), 3 dp on a phone.
     fun states(c: Context, normal: Int, pressed: Int, radiusDp: Int = 14): StateListDrawable {
         val r = dp(c, radiusDp).toFloat()
+        val ring = dp(c, if (scale(c) > 1f) 4 else 3)
         val s = StateListDrawable()
         s.addState(intArrayOf(android.R.attr.state_pressed), round(pressed, r))
-        s.addState(intArrayOf(android.R.attr.state_focused), round(normal, r, dp(c, 3), GOLD))
+        s.addState(
+            intArrayOf(android.R.attr.state_focused),
+            if (normal == GOLD) goldRing(r, ring) else round(normal, r, ring, GOLD),
+        )
         s.addState(IntArray(0), round(normal, r))
         return s
+    }
+
+    // cream outside, then a navy line, then the gold button
+    private fun goldRing(r: Float, ring: Int): Drawable {
+        val inner = round(GOLD, maxOf(0f, r - ring), ring, BG)
+        val d = LayerDrawable(arrayOf<Drawable>(round(TEXT, r), inner))
+        d.setLayerInset(1, ring, ring, ring, ring)
+        return d
+    }
+
+    private val SYMBOLS = Regex("[\\p{So}\\p{Sm}\uFE0F\u200D]")
+    private val SPACES = Regex("\\s+")
+
+    /** What TalkBack says for a label: the words without the symbols and emoji (▦ ⟳ ＋ ⚙ ⇩ ✓ …). */
+    fun spoken(s: CharSequence): String = s.toString().replace(SYMBOLS, " ").replace(SPACES, " ").trim()
+
+    // every button: TalkBack says "button", and reads the words of the label without the symbols
+    private val buttonInfo = object : View.AccessibilityDelegate() {
+        override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
+            super.onInitializeAccessibilityNodeInfo(host, info)
+            info.className = Button::class.java.name
+            if (host.contentDescription.isNullOrEmpty() && host is TextView) {
+                val words = spoken(host.text ?: "")
+                if (words.isNotEmpty()) info.contentDescription = words
+            }
+        }
     }
 
     fun button(c: Context, label: String, primary: Boolean = false, onClick: () -> Unit): TextView {
@@ -74,6 +114,28 @@ object Ui {
         b.isFocusable = true
         b.isClickable = true
         b.setOnClickListener { onClick() }
+        b.setAccessibilityDelegate(buttonInfo)
+        return b
+    }
+
+    /** Marks a screen or section title as a heading (TalkBack can jump from heading to heading). Android 9+. */
+    fun <T : View> heading(v: T): T {
+        if (Build.VERSION.SDK_INT >= 28) v.isAccessibilityHeading = true
+        return v
+    }
+
+    /** A check box in the app's colours: gold box, gold ring on the TV, at least 48 dp high. */
+    fun check(c: Context, label: String, on: Boolean): CheckBox {
+        val b = CheckBox(c)
+        b.text = label
+        b.textSize = 15f * scale(c)
+        b.setTextColor(TEXT)
+        b.isChecked = on
+        b.buttonTintList = ColorStateList.valueOf(GOLD)
+        b.background = states(c, Color.TRANSPARENT, CARD_DOWN, 10)
+        b.minHeight = dp(c, 48)
+        val p = dp(c, 8)
+        b.setPaddingRelative(b.paddingStart, p, p, p)
         return b
     }
 

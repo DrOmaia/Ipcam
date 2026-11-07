@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- the app's name under its icon when the device itself is in English -->
+<resources>
+    <string name="app_name">Home Cameras</string>
+</resources>
