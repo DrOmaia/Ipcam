@@ -280,9 +280,10 @@ class Tile(
         var y = v.top + v.height / 2f
         var p = v.parent
         while (p is View && p !== view) {
-            x += p.left - p.scrollX
-            y += p.top - p.scrollY
-            p = p.parent
+            val pv: View = p
+            x += pv.left - pv.scrollX
+            y += pv.top - pv.scrollY
+            p = pv.parent
         }
         return floatArrayOf(x, y)
     }
