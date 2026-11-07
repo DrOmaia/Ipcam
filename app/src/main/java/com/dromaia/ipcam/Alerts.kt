@@ -166,6 +166,7 @@ class AlertService : Service() {
         private const val PAUSED_ID = 4102
         private const val CH_WATCH = "watch"
         private const val CH_MOTION = "motion"
+        private const val CH_QUIET = "motion_quiet" // prayer time: the same alert without sound
         private const val COOLDOWN_MS = 60_000L
         private const val SHOW_MS = 30_000L
         private const val LONGEST_MS = 2 * 60_000L // a camera stuck on "motion" does not stay on the TV for ever
@@ -412,14 +413,15 @@ class AlertService : Service() {
         val last = lastAlert[cam.id]
         if (last != null && now - last < COOLDOWN_MS) return
         lastAlert[cam.id] = now
+        val quiet = Prayer.quiet(this) // prayer time: silently (Settings → Motion alerts → Prayer time)
         if (tv) {
-            if (cam.popTv && Alerts.canOverlay(this)) main.post { showPop(cam, kind) }
+            if (!quiet && cam.popTv && Alerts.canOverlay(this)) main.post { showPop(cam, kind) }
         } else {
             try {
                 wake?.acquire(30_000L)
             } catch (_: Throwable) {
             }
-            notifyPhone(cam, kind)
+            notifyPhone(cam, kind, quiet)
         }
     }
 
@@ -445,7 +447,7 @@ class AlertService : Service() {
 
     // ---------------------------------------------------------------- phone: notification with a picture
 
-    private fun notifyPhone(cam: Camera, kind: String) {
+    private fun notifyPhone(cam: Camera, kind: String, quiet: Boolean) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val id = 5000 + (cam.id.hashCode() and 0xFFF)
         val at = System.currentTimeMillis()
@@ -454,7 +456,7 @@ class AlertService : Service() {
             nm.cancel(id)
         } catch (_: Throwable) {
         }
-        postAlert(nm, id, cam, at, kind, null)
+        postAlert(nm, id, cam, at, kind, null, quiet)
         // the picture follows a moment later: the alert itself does not wait for the camera
         thread(isDaemon = true, name = "ipcam-snapshot") {
             val pic = try {
@@ -462,7 +464,7 @@ class AlertService : Service() {
             } catch (_: Throwable) {
                 null
             }
-            if (pic != null && !destroyed && stillShown(nm, id)) postAlert(nm, id, cam, at, kind, pic)
+            if (pic != null && !destroyed && stillShown(nm, id)) postAlert(nm, id, cam, at, kind, pic, quiet)
         }
     }
 
@@ -480,14 +482,14 @@ class AlertService : Service() {
         true
     }
 
-    private fun postAlert(nm: NotificationManager, id: Int, cam: Camera, at: Long, kind: String, pic: Bitmap?) {
+    private fun postAlert(nm: NotificationManager, id: Int, cam: Camera, at: Long, kind: String, pic: Bitmap?, quiet: Boolean) {
         try {
             val open = PendingIntent.getActivity(
                 this, id,
                 Watch.one(this, cam.id).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-            val b = motionBuilder(nm, cam, at, kind)
+            val b = motionBuilder(nm, cam, at, kind, quiet)
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(pic != null) // adding the picture does not ring a second time
                 .setContentIntent(open)
@@ -498,7 +500,7 @@ class AlertService : Service() {
             if (Lock.enabled(this)) {
                 // the app is locked with a PIN: a locked phone shows only the words, never the picture
                 b.setVisibility(Notification.VISIBILITY_PRIVATE)
-                b.setPublicVersion(motionBuilder(nm, cam, at, kind).build())
+                b.setPublicVersion(motionBuilder(nm, cam, at, kind, quiet).build())
             }
             nm.notify(id, b.build())
         } catch (_: SecurityException) {
@@ -508,12 +510,22 @@ class AlertService : Service() {
     }
 
     /** «حركة عند «الحوش»» (or شخص / سيارة / عبور خط …) and the time, without a picture. */
-    private fun motionBuilder(nm: NotificationManager, cam: Camera, at: Long, kind: String): Notification.Builder {
+    private fun motionBuilder(nm: NotificationManager, cam: Camera, at: Long, kind: String, quiet: Boolean): Notification.Builder {
         val b = if (Build.VERSION.SDK_INT >= 26) {
-            nm.createNotificationChannel(
-                NotificationChannel(CH_MOTION, L.t(this, "تنبيه الحركة", "Motion alert"), NotificationManager.IMPORTANCE_HIGH),
-            )
-            Notification.Builder(this, CH_MOTION)
+            if (quiet) {
+                nm.createNotificationChannel(
+                    NotificationChannel(CH_QUIET, L.t(this, "تنبيه الحركة وقت الصلاة (بصمت)", "Motion alert at prayer time (silent)"),
+                        NotificationManager.IMPORTANCE_LOW),
+                )
+                Notification.Builder(this, CH_QUIET)
+            } else {
+                nm.createNotificationChannel(
+                    NotificationChannel(CH_MOTION, L.t(this, "تنبيه الحركة", "Motion alert"), NotificationManager.IMPORTANCE_HIGH),
+                )
+                Notification.Builder(this, CH_MOTION)
+            }
+        } else if (quiet) {
+            @Suppress("DEPRECATION") Notification.Builder(this).setPriority(Notification.PRIORITY_LOW).setDefaults(0)
         } else {
             @Suppress("DEPRECATION") Notification.Builder(this).setPriority(Notification.PRIORITY_HIGH).setDefaults(Notification.DEFAULT_ALL)
         }

@@ -198,6 +198,24 @@ class SettingsActivity : Base() {
         }
     }
 
+    // «15 دقيقة» / "15 minutes"
+    private fun minutes(n: Int) = t(Ui.count(n, "دقيقة واحدة", "دقيقتان", "دقائق", "دقيقة"), if (n == 1) "1 minute" else "$n minutes")
+
+    // the city of the prayer times (Riyadh by default)
+    private fun pickCity() {
+        val all = Prayer.CITIES
+        AlertDialog.Builder(this)
+            .setTitle(t("المدينة", "City"))
+            .setSingleChoiceItems(all.map { it.label(this) }.toTypedArray(), all.indexOf(Prayer.city(this))) { d, which ->
+                d.dismiss()
+                Prefs.put(this, "prayerCity", all[which].key)
+                focusTag = "prayerCity"
+                build()
+            }
+            .setNegativeButton(t("إلغاء", "Cancel"), null)
+            .show()
+    }
+
     // 1 … 16 cameras on one page of «all cameras»
     private fun pickPerPage() {
         val labels = Array(16) { Ui.cameras(this, it + 1) }
@@ -282,6 +300,38 @@ class SettingsActivity : Base() {
             Ui.below(this, 8),
         )
         if (mode == "custom") s.addView(note(t("من ", "From ") + hhmm(from) + t(" إلى ", " to ") + hhmm(to)), Ui.below(this, 6))
+
+        // prayer time: for some minutes from each adhan the alert comes silently (phone) / no pop-up (TV)
+        s.addView(Ui.heading(Ui.text(this, t("وقت الصلاة", "Prayer time"), 15f, Ui.TEXT, true)), Ui.below(this, 14))
+        s.addView(note(
+            if (tv) t("لا تظهر الكاميرا فوق التطبيقات لعدة دقائق من كل أذان.",
+                "The camera does not pop up over other apps for some minutes from each adhan.")
+            else t("يصل التنبيه بصمت، بدون صوت، لعدة دقائق من كل أذان، وتجده في الإشعارات.",
+                "The alert comes silently, without sound, for some minutes from each adhan; you find it in the notifications.")
+        ), Ui.below(this, 4))
+        val quietOn = Prefs.prayerQuiet(this)
+        s.addView(
+            choice(listOf("pq_on" to t("تشغيل", "On"), "pq_off" to t("إيقاف", "Off")), if (quietOn) "pq_on" else "pq_off") { v ->
+                Prefs.put(this, "prayerQuiet", v == "pq_on")
+                build()
+            },
+            Ui.below(this, 8),
+        )
+        if (quietOn) {
+            s.addView(
+                choice(listOf(15, 20, 30, 45).map { it.toString() to minutes(it) }, Prefs.prayerMin(this).toString()) { v ->
+                    Prefs.put(this, "prayerMin", v.toInt())
+                    build()
+                },
+                Ui.below(this, 8),
+            )
+            s.addView(note(t("ويوم الجمعة ساعة على الأقل، لخطبة الجمعة والصلاة.", "On Friday at least an hour, for the sermon and the prayer.")), Ui.below(this, 6))
+            val cityBtn = Ui.button(this, t("المدينة: ", "City: ") + Prayer.city(this).label(this) + "  ▾") { pickCity() }
+            cityBtn.tag = "prayerCity"
+            s.addView(cityBtn, Ui.below(this, 8))
+            val today = Prayer.today(this)
+            if (today.isNotEmpty()) s.addView(note(t("أذان اليوم: ", "Today's adhans: ") + today), Ui.below(this, 6))
+        }
 
         if (tv && !Alerts.canOverlay(this)) {
             s.addView(note(t("يحتاج التلفزيون إذنًا لإظهار الكاميرا فوق التطبيقات.", "The TV needs permission to show the camera over other apps.")), Ui.below(this, 12))

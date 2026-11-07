@@ -42,6 +42,11 @@ object Prefs {
     fun alertFrom(c: Context) = int(c, "alertFrom", 0)
     fun alertTo(c: Context) = int(c, "alertTo", 0)
 
+    /** Prayer time: motion alerts come silently (no sound, no TV pop-up) for [prayerMin] minutes from each adhan. */
+    fun prayerQuiet(c: Context) = bool(c, "prayerQuiet", false)
+    fun prayerMin(c: Context) = int(c, "prayerMin", 20)
+    fun prayerCity(c: Context) = str(c, "prayerCity", "riyadh")
+
     /** SHA-256 of the app PIN, or "" when the lock is off. */
     fun pinHash(c: Context) = str(c, "pinHash", "")
 

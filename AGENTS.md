@@ -34,7 +34,9 @@ screen; Arabic right to left). Night colours (navy + gold, like prayer-tv).
 - **Move cameras over the same Wi-Fi** to the TV or a family phone (Settings → Send / Receive, 4-digit code on the
   receiving screen). This is the only way camera passwords leave a device, and only by the owner's action.
 - **Motion alerts** (ONVIF events): phone = notification with a snapshot; TV = the camera pops up in a corner over any
-  app for 30 s; alert hours (all day / night / custom).
+  app for 30 s; alert hours (all day / night / custom); **prayer time** (optional): for 15–45 min from each adhan
+  (Friday's Dhuhr at least 60) the phone alert comes silently (channel `motion_quiet`) and the TV does not pop up.
+  Times computed on the device like prayer-tv (`Prayer.kt`: Umm al-Qura for Saudi cities, Jordan for Amman / Irbid).
 - **Phone as a camera**: an old phone becomes an RTSP camera (built-in server, port 8554) that the other devices find;
   viewers can talk through it.
 - **Hikvision recorders (DVR / NVR)**: add all channels at once with their names (ISAPI), **recordings** (day timeline,
@@ -59,6 +61,7 @@ User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md
 | `LockActivity.kt` | PIN pad (also choosing a PIN). |
 | `Transfer.kt`, `TransferActivity.kt` | Send / receive cameras on the same Wi-Fi (NSD `_ipcamshare._tcp`, code). |
 | `Onvif.kt`, `Alerts.kt` | ONVIF client (PTZ, snapshot, events); alert service (alerts by type), TV pop-up, boot receiver. |
+| `Prayer.kt` | Prayer times on the device (cities, Umm al-Qura / Jordan, Ramadan Isha), `Prayer.quiet()` for the alerts. |
 | `Hik.kt` | Hikvision ISAPI: device name, channels, recordings search, events search, alert stream, recorder clock. |
 | `PlaybackActivity.kt`, `EventsActivity.kt` | Recordings (24 h timeline) and events list of Hikvision recorders. |
 | `CameraModeActivity.kt`, `CameraService.kt`, `RtspServer.kt`, `PhoneCams.kt`, `Talk.kt` | Phone as a camera + talk. |
