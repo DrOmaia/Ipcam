@@ -9,12 +9,35 @@ import java.util.concurrent.ConcurrentHashMap
 
 // The supported camera makes and how each one names its RTSP streams
 enum class Brand(val key: String, val ar: String, val en: String, val port: Int, val onvifPort: Int) {
+    // the order is the order in the «camera type» list: the most common first
     HIKVISION("hik", "Hikvision / HiLook", "Hikvision / HiLook", 554, 80),
     DAHUA("dahua", "Dahua / Imou", "Dahua / Imou", 554, 80),
+    EZVIZ("ezviz", "EZVIZ", "EZVIZ", 554, 0),
     TAPO("tapo", "TP-Link Tapo", "TP-Link Tapo", 554, 2020),
+    VIGI("vigi", "TP-Link VIGI", "TP-Link VIGI", 554, 80),
+    REOLINK("reolink", "Reolink", "Reolink", 554, 8000),
+    UNIVIEW("uniview", "Uniview (UNV)", "Uniview (UNV)", 554, 80),
+    FOSCAM("foscam", "Foscam", "Foscam", 88, 888),
+    EUFY("eufy", "eufy", "eufy", 554, 0),
+    WYZE("wyze", "Wyze", "Wyze", 554, 0),
+    YOOSEE("yoosee", "Yoosee", "Yoosee", 554, 5000),
+    VSTARCAM("vstarcam", "Vstarcam / Eye4", "Vstarcam / Eye4", 10554, 10080),
     IPWEBCAM("ipwebcam", "جوال (IP Webcam)", "Phone (IP Webcam)", 8080, 0),
     PHONE("phone", "جوال بهذا التطبيق", "Phone with this app", 8554, 0),
     CUSTOM("custom", "رابط RTSP", "RTSP link", 554, 80);
+
+    /** Makes whose cameras can sit on a recorder with several channels. */
+    val channels: Boolean get() = this == HIKVISION || this == DAHUA || this == UNIVIEW || this == REOLINK
+
+    /** Yoosee sends its video over UDP only; every other make plays steadier over TCP. */
+    val tcp: Boolean get() = this != YOOSEE
+
+    /** User name to start with («» = the owner sets it in the camera's own app). */
+    val defaultUser: String get() = when (this) {
+        TAPO, IPWEBCAM, EUFY, WYZE -> ""
+        PHONE -> "ipcam"
+        else -> "admin"
+    }
 
     fun label(c: Context) = L.t(c, ar, en)
 
@@ -60,7 +83,16 @@ class Camera(
             // channel 1 → 101 (main) / 102 (sub); on a recorder (NVR) channel 5 → 501 / 502
             Brand.HIKVISION -> "$base/Streaming/Channels/${channel}0${if (main) 1 else 2}"
             Brand.DAHUA -> "$base/cam/realmonitor?channel=$channel&subtype=${if (main) 0 else 1}"
-            Brand.TAPO -> "$base/${if (main) "stream1" else "stream2"}"
+            Brand.TAPO, Brand.VIGI -> "$base/${if (main) "stream1" else "stream2"}"
+            Brand.EZVIZ -> "$base/h264/ch1/${if (main) "main" else "sub"}/av_stream"
+            // Reolink: main by the new name (H.264 or H.265), light stream by the old name every firmware knows
+            Brand.REOLINK -> channel.toString().padStart(2, '0').let { if (main) "$base/Preview_${it}_main" else "$base/h264Preview_${it}_sub" }
+            Brand.UNIVIEW -> "$base/unicast/c$channel/s${if (main) 0 else 1}/live"
+            Brand.FOSCAM -> "$base/${if (main) "videoMain" else "videoSub"}"
+            Brand.EUFY -> "$base/live0"
+            Brand.WYZE -> "$base/live"
+            Brand.YOOSEE -> "$base/${if (main) "onvif1" else "onvif2"}"
+            Brand.VSTARCAM -> "$base/tcp/av0_${if (main) 0 else 1}"
             Brand.IPWEBCAM -> "$base/h264_ulaw.sdp"
             Brand.PHONE -> "$base/${if (main) "live" else "low"}"
             Brand.CUSTOM -> url.trim()

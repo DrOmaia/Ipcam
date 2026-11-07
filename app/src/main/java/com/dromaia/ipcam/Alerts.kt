@@ -648,7 +648,7 @@ class AlertService : Service() {
                 .build()
             p.addListener(popListener)
             val source = RtspMediaSource.Factory()
-                .setForceUseRtpTcp(true)
+                .setForceUseRtpTcp(cam.brand.tcp)
                 .setTimeoutMs(10_000)
                 .createMediaSource(MediaItem.fromUri(url))
             p.setMediaSource(source)

@@ -20,8 +20,11 @@ Edit only this file, then run the script.
 everything reachable with the D-pad remote (gold focus ring, cards grow on focus). Home network only (no cloud).
 **Arabic (default) and English** (Settings → Language; every text is `L.t(c, "عربي", "English")` / `t(…)` in a `Base`
 screen; Arabic right to left). Night colours (navy + gold, like prayer-tv).
-- Makes: **Hikvision / HiLook**, **Dahua / Imou**, **TP-Link Tapo**, **IP Webcam** (an old phone with that app),
-  **a phone running this app's camera mode**, and any camera by a full **RTSP link**.
+- Makes: **Hikvision / HiLook**, **Dahua / Imou**, **EZVIZ**, **TP-Link Tapo**, **TP-Link VIGI**, **Reolink**, **Uniview**,
+  **Foscam**, **eufy**, **Wyze**, **Yoosee**, **Vstarcam / Eye4**, **IP Webcam** (an old phone with that app),
+  **a phone running this app's camera mode**, and any camera by a full **RTSP link**. The camera type is one button that
+  opens the list; under it «طريقة الإضافة» shows that make's steps (`Guides.kt`: where the address is, which user and
+  password, what to turn on in the make's own app).
 - Add a camera by hand, or **search the network** (ONVIF discovery, RTSP 554, IP Webcam 8080, phones in camera mode).
 - **Groups** (e.g. «داخل البيت», «الحوش»), a green / red **status dot** per camera, **shortcuts** (app icon long-press,
   pinned shortcut per camera) and a **home-screen widget**.
@@ -60,14 +63,17 @@ User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md
 | `CameraModeActivity.kt`, `CameraService.kt`, `RtspServer.kt`, `PhoneCams.kt`, `Talk.kt` | Phone as a camera + talk. |
 | `CamWidget.kt`, `res/layout/widget_cams.xml` | Home-screen widget. |
 | `Update.kt` | Newest / stable version from GitHub, download and install. |
-| `Camera.kt` | `Camera`, `Brand` (RTSP link of each make), `Store` (SharedPreferences `ipcam` / key `cameras`). |
+| `Camera.kt` | `Camera`, `Brand` (RTSP link, ports, default user of each make), `Store` (SharedPreferences `ipcam` / key `cameras`). |
+| `Guides.kt` | «How to add it»: numbered steps per make (Arabic / English), shown on the add-camera screen. |
 | `Ui.kt` | Colours, buttons, fields (1.3× text on TV), Arabic / English number agreement. |
 | `app/src/main/AndroidManifest.xml`, `app/src/main/res/` | Permissions, services, icon, TV banner, widget. |
 | `.github/workflows/build.yml` | Builds, signs and publishes every push to `main` as release `vN`; "mark stable" and "restore stable". |
 | `app/release.keystore` | The signing key (PKCS12, EC P-256, alias `ipcam`). Public in this repository by the owner's choice (same as prayer-tv and Mani). **Never change, delete or replace it**: a different key stops installed apps from updating. |
 
 RTSP links (`Camera.rtsp`): Hikvision `/Streaming/Channels/{ch}01` (main) and `{ch}02` (sub);
-Dahua `/cam/realmonitor?channel={ch}&subtype=0|1`; Tapo `/stream1` and `/stream2`; IP Webcam `:8080/h264_ulaw.sdp`;
+Dahua `/cam/realmonitor?channel={ch}&subtype=0|1`; Tapo and VIGI `/stream1` and `/stream2`; EZVIZ `/h264/ch1/main|sub/av_stream`;
+Reolink `/Preview_{ch:02}_main` and `/h264Preview_{ch:02}_sub`; Uniview `/unicast/c{ch}/s0|s1/live`; Foscam `:88/videoMain|videoSub`;
+eufy `/live0`; Wyze `/live`; Yoosee `/onvif1|onvif2` (UDP only: `Brand.tcp`); Vstarcam `:10554/tcp/av0_0|av0_1`; IP Webcam `:8080/h264_ulaw.sdp`;
 phone camera `:8554/live` and `/low` (user `ipcam`); Hikvision playback `/Streaming/tracks/{ch}01?starttime=yyyyMMddTHHmmssZ`
 (recorder wall clock). User and password are URL-encoded.
 

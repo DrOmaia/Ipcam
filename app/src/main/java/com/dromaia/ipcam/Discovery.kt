@@ -63,9 +63,23 @@ object Discovery {
     fun guess(text: String): Brand? {
         val t = text.lowercase()
         return when {
-            listOf("hikvision", "hilook", "hik-", "hikv", "ds-2c", "ds-7", "ds-2d").any { t.contains(it) } -> Brand.HIKVISION
-            listOf("dahua", "imou", "lechange", "amcrest", "dh-ipc", "ipc-hfw", "ipc-hdw", "ipc-a").any { t.contains(it) } -> Brand.DAHUA
+            // EZVIZ runs Hikvision software: check its own name first (models CS-C…, CS-H…)
+            listOf("ezviz", "cs-c", "cs-h", "cs-bc", "cs-db").any { t.contains(it) } -> Brand.EZVIZ
+            // Hikvision cameras DS-2C…/DS-2D…, recorders DS-7… and AcuSense iDS-7… / iDS-2…
+            listOf("hikvision", "hilook", "hik-", "hikv", "ds-2c", "ds-7", "ds-2d", "ids-7", "ids-2", "ids-9").any { t.contains(it) } -> Brand.HIKVISION
+            // Imou cameras answer with their old LeChange name: «LC IPC-GK2C-…»
+            listOf("dahua", "imou", "lechange", "amcrest", "dh-ipc", "ipc-hfw", "ipc-hdw", "ipc-a", "lc ipc", "lc-ipc", "lc_ipc").any { t.contains(it) } ||
+                t.startsWith("lc ") -> Brand.DAHUA
+            // VIGI is TP-Link too: before Tapo
+            t.contains("vigi") -> Brand.VIGI
             listOf("tapo", "tp-link", "tplink", "tp-ipc").any { t.contains(it) } -> Brand.TAPO
+            listOf("reolink", "rlc-", "rln").any { t.contains(it) } -> Brand.REOLINK
+            listOf("uniview", "unv").any { t.contains(it) } -> Brand.UNIVIEW
+            t.contains("foscam") -> Brand.FOSCAM
+            listOf("yoosee", "gwell").any { t.contains(it) } -> Brand.YOOSEE
+            listOf("vstarcam", "eye4").any { t.contains(it) } -> Brand.VSTARCAM
+            t.contains("eufy") -> Brand.EUFY
+            t.contains("wyze") -> Brand.WYZE
             else -> null
         }
     }

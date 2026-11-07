@@ -47,9 +47,9 @@ class EditActivity : Base() {
     private val alertWhatButtons = HashMap<String, TextView>()
     private val hikRows = ArrayList<View>()     // «add all the recorder's cameras»: Hikvision only
     private lateinit var more: TextView // opens / closes the ONVIF options
-    private val brandButtons = HashMap<Brand, TextView>()
+    private lateinit var brandButton: TextView
     private val hostRows = ArrayList<View>()    // address, port, user, password: not for «RTSP link»
-    private val channelRows = ArrayList<View>() // channel: Hikvision and Dahua only
+    private val channelRows = ArrayList<View>() // channel: makes with recorders (Brand.channels)
     private val urlRows = ArrayList<View>()     // only for «RTSP link»
     private val onvifRows = ArrayList<View>()   // ONVIF options: makes that speak ONVIF
 
@@ -63,9 +63,8 @@ class EditActivity : Base() {
             c.name = intent.getStringExtra("name") ?: ""
             c.brand = Brand.of(intent.getStringExtra("brand")) ?: Brand.HIKVISION
             c.port = intent.getIntExtra("port", 0).let { if (it > 0) it else c.brand.port }
-            if (c.brand == Brand.PHONE) c.user = "ipcam"
-            // IP Webcam: usually no user; Tapo: the «Camera Account» made in the Tapo app (never "admin")
-            if (c.brand == Brand.IPWEBCAM || c.brand == Brand.TAPO) c.user = ""
+            // admin for most; ipcam for a phone; empty where the user is made in the camera's own app (Tapo «Camera Account»…)
+            c.user = c.brand.defaultUser
         }
         brand = cam.brand
 
@@ -84,24 +83,16 @@ class EditActivity : Base() {
                 "Easiest: send the cameras from your phone (Settings → Send cameras) instead of typing with the remote.")), Ui.below(this, 8))
         }
 
-        // make of the camera: 6 buttons, 2 per row
+        // make of the camera: one button that opens the list of makes (easy with the remote and with touch)
         col.addView(label(t("نوع الكاميرا", "Camera type")), Ui.below(this, 18))
-        var row: LinearLayout? = null
-        Brand.values().forEachIndexed { i, b ->
-            if (i % 2 == 0) {
-                val r = LinearLayout(this)
-                row = r
-                col.addView(r, Ui.below(this, 8))
-            }
-            val btn = Ui.button(this, b.label(this)) { choose(b) }
-            btn.textSize = 14f * Ui.scale(this)
-            brandButtons[b] = btn
-            row?.addView(btn, Ui.share(this, 4))
-        }
+        brandButton = Ui.button(this, "") { pickBrand() }
+        col.addView(brandButton, Ui.below(this, 8))
 
+        // «how to add it»: the steps of the chosen make
+        col.addView(label(t("طريقة الإضافة", "How to add it")), Ui.below(this, 14))
         hint = note("")
         hint.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE // read out when the make changes
-        col.addView(hint, Ui.below(this, 12))
+        col.addView(hint, Ui.below(this, 6))
 
         nameField = Ui.field(this, t("مثل: الباب الأمامي", "e.g. Front door"))
         nameField.setText(cam.name)
@@ -280,7 +271,7 @@ class EditActivity : Base() {
         choose(brand, first = true)
         // TV, a new camera found by the search: straight to the field still to fill (the remote is slow to walk)
         if (tv && isNew && brand != Brand.CUSTOM && hostField.text.isNotBlank()) {
-            (if (brand == Brand.TAPO && userField.text.isBlank()) userField else passField).requestFocus()
+            (if (brand.defaultUser.isEmpty() && brand != Brand.IPWEBCAM && userField.text.isBlank()) userField else passField).requestFocus()
         }
     }
 
@@ -315,55 +306,42 @@ class EditActivity : Base() {
             val typed = portField.text.toString().toIntOrNull()
             if (typed == null || typed == brand.port) portField.setText(b.port.toString())
             val user = userField.text.toString()
-            if (b == Brand.PHONE && user.isBlank()) userField.setText("ipcam")
-            // Tapo has no "admin": a new Tapo camera starts with an empty user (its «Camera Account»)
-            if (b == Brand.TAPO && isNew && user == "admin") userField.setText("")
-            if (b != Brand.IPWEBCAM && b != Brand.PHONE && b != Brand.TAPO && user.isBlank()) userField.setText("admin")
+            // the usual user of the new make, unless the user typed his own
+            val usual = Brand.values().any { it.defaultUser == user && it.defaultUser.isNotEmpty() }
+            if (user.isBlank() || (usual && (isNew || b.defaultUser.isNotEmpty()))) userField.setText(b.defaultUser)
         }
         brand = b
-        brandButtons.forEach { (k, btn) ->
-            val on = k == b
-            btn.background = if (on) Ui.states(this, Ui.GOLD, Ui.GOLD_DOWN) else Ui.states(this, Ui.CARD, Ui.CARD_DOWN)
-            btn.setTextColor(if (on) Ui.BG else Ui.TEXT)
-            btn.contentDescription = k.label(this) + if (on) t("، مختار", ", selected") else ""
-        }
+        brandButton.text = b.label(this) + "  ▾"
+        brandButton.contentDescription = t("نوع الكاميرا: ", "Camera type: ") + b.label(this) + t("، اضغط للتغيير", ", press to change")
         val custom = b == Brand.CUSTOM
         hostRows.forEach { it.visibility = if (custom) View.GONE else View.VISIBLE }
-        channelRows.forEach { it.visibility = if (b == Brand.HIKVISION || b == Brand.DAHUA) View.VISIBLE else View.GONE }
+        channelRows.forEach { it.visibility = if (b.channels) View.VISIBLE else View.GONE }
         urlRows.forEach { it.visibility = if (custom) View.VISIBLE else View.GONE }
         onvifRows.forEach { it.visibility = if (b.onvif) View.VISIBLE else View.GONE }
         hikRows.forEach { it.visibility = if (b == Brand.HIKVISION) View.VISIBLE else View.GONE }
         if (b.onvif) showAdvanced(false)
         popBox.visibility = if (b.onvif) View.VISIBLE else View.GONE
         if (::onvifPortField.isInitialized) onvifPortField.hint = b.onvifPort.toString()
-        userField.hint = if (b == Brand.TAPO) t("اسم «حساب الكاميرا»", "Camera Account user") else "admin"
-        hint.text = when (b) {
-            Brand.HIKVISION -> t(
-                "اسم المستخدم عادةً admin، وكلمة المرور هي كلمة مرور الجهاز نفسه.\nإذا كانت الكاميرات موصولة على مسجّل NVR: أضف عنوان المسجّل، واكتب رقم القناة لكل كاميرا.",
-                "The user is usually admin, and the password is the device's own password.\nIf the cameras are on an NVR: add the NVR's address and type the channel of each camera.",
-            )
-            Brand.DAHUA -> t(
-                "Dahua: اسم المستخدم admin وكلمة مرور الجهاز.\nImou: اسم المستخدم admin، وكلمة المرور هي Safety Code المكتوب على ملصق الكاميرا (ما لم تغيّرها).",
-                "Dahua: user admin and the device password.\nImou: user admin, and the password is the Safety Code on the camera's label (unless you changed it).",
-            )
-            Brand.TAPO -> t(
-                "مهم: لا تستخدم حساب تطبيق Tapo. أنشئ «حساب الكاميرا» من تطبيق Tapo: الكاميرا ← الإعدادات ← الإعدادات المتقدمة ← حساب الكاميرا، ثم اكتبه هنا.",
-                "Important: not your Tapo app account. Create a “Camera Account” in the Tapo app: camera → Settings → Advanced settings → Camera Account, then type it here.",
-            )
-            Brand.IPWEBCAM -> t(
-                "على الجوال القديم: ثبّت تطبيق IP Webcam من Google Play ← «Start server». العنوان يظهر أسفل شاشته، والمنفذ 8080. اترك المستخدم وكلمة المرور فارغين إذا لم تضعهما في IP Webcam.",
-                "On the old phone: install IP Webcam from Google Play → “Start server”. The address is shown at the bottom of its screen, port 8080. Leave user and password empty unless you set them in IP Webcam.",
-            )
-            Brand.PHONE -> t(
-                "جوال فيه «كاميرات البيت» في وضع الكاميرا (الإعدادات ← اجعل هذا الجوال كاميرا). الأسهل: «بحث في الشبكة» يجده وحده. المستخدم ipcam وكلمة المرور الظاهرة على ذلك الجوال.",
-                "A phone running Home Cameras in camera mode (Settings → Make this phone a camera). Easiest: “Search network” finds it. User ipcam and the password shown on that phone.",
-            )
-            Brand.CUSTOM -> t(
-                "لأي كاميرا أخرى: اكتب رابط RTSP كامل كما في دليل الكاميرا، ومعه اسم المستخدم وكلمة المرور.",
-                "For any other camera: type the full RTSP link from the camera's manual, with the user and password.",
-            )
+        userField.hint = when {
+            b == Brand.TAPO -> t("اسم «حساب الكاميرا»", "Camera Account user")
+            b.defaultUser.isEmpty() -> t("الاسم الذي وضعته في تطبيق الكاميرا", "The user you set in the camera's app")
+            else -> b.defaultUser
         }
+        hint.text = Guides.text(this, b)
         updatePreview()
+    }
+
+    // the list of makes: one choice, then the form shows that make's fields and steps
+    private fun pickBrand() {
+        val all = Brand.values()
+        AlertDialog.Builder(this)
+            .setTitle(t("نوع الكاميرا", "Camera type"))
+            .setSingleChoiceItems(all.map { it.label(this) }.toTypedArray(), all.indexOf(brand)) { d, which ->
+                d.dismiss()
+                if (all[which] != brand) choose(all[which])
+            }
+            .setNegativeButton(t("إلغاء", "Cancel"), null)
+            .show()
     }
 
     private fun showAway(open: Boolean) {

@@ -332,9 +332,9 @@ class Tile(
         val p = ExoPlayer.Builder(act).setLoadControl(load).build()
         p.volume = if (muted) 0f else 1f
         p.addListener(listener)
-        // RTSP over TCP: steadier on home Wi-Fi than UDP
+        // RTSP over TCP: steadier on home Wi-Fi than UDP (Yoosee: UDP only, Media3 tries UDP first)
         val source = RtspMediaSource.Factory()
-            .setForceUseRtpTcp(true)
+            .setForceUseRtpTcp(cam.brand.tcp)
             .setTimeoutMs(10_000)
             .createMediaSource(MediaItem.fromUri(url))
         p.setMediaSource(source)
