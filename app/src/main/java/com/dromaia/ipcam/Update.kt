@@ -8,25 +8,66 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
-// Update from inside the app (same way as the prayer-times app): download the latest release with the system's
-// download manager, then open the Android installer. Works while the GitHub repository is public.
+// Updates from inside the app (same way as the prayer-times app and Mani): the screen shows this version, the newest
+// version on GitHub and the stable one (file STABLE = the last version the owner tested); the download manager fetches
+// the APK and the Android installer opens. Android only installs a higher version number over a lower one.
 object Update {
-    const val URL = "https://github.com/DrOmaia/Ipcam/releases/latest/download/ipcam.apk"
+    private const val REPO = "DrOmaia/Ipcam"
     private const val APK = "application/vnd.android.package-archive"
     private const val PREFS = "ipcam-update"
 
     const val NEEDS_PERMISSION = -1L
     const val FAILED = -2L
 
-    fun version(c: Context): String = try {
+    class Info(val latest: Int, val stable: Int)
+
+    fun url(version: Int) = "https://github.com/$REPO/releases/download/v$version/ipcam.apk"
+
+    fun versionName(c: Context): String = try {
         c.packageManager.getPackageInfo(c.packageName, 0).versionName ?: ""
     } catch (_: Exception) {
         ""
     }
 
-    /** Starts the download; returns its id, or NEEDS_PERMISSION / FAILED. */
-    fun start(a: Activity): Long {
+    /** This app's build number (= the release vN it came from; 1 for a local build). */
+    fun versionNumber(c: Context): Int = try {
+        @Suppress("DEPRECATION")
+        val pi = c.packageManager.getPackageInfo(c.packageName, 0)
+        if (Build.VERSION.SDK_INT >= 28) pi.longVersionCode.toInt() else pi.versionCode
+    } catch (_: Exception) {
+        0
+    }
+
+    private fun get(url: String): String? = try {
+        val con = URL(url).openConnection() as HttpURLConnection
+        con.connectTimeout = 8000
+        con.readTimeout = 8000
+        con.setRequestProperty("Accept", "application/vnd.github+json")
+        con.setRequestProperty("User-Agent", "ipcam-app")
+        try {
+            if (con.responseCode == 200) con.inputStream.bufferedReader().use { it.readText() } else null
+        } finally {
+            con.disconnect()
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    /** Blocking (call off the main thread): newest and stable release numbers; 0 = unknown / none. */
+    fun check(): Info {
+        val latest = get("https://api.github.com/repos/$REPO/releases/latest")?.let {
+            try { JSONObject(it).optString("tag_name").removePrefix("v").toIntOrNull() } catch (_: Exception) { null }
+        } ?: 0
+        val stable = get("https://raw.githubusercontent.com/$REPO/main/STABLE")?.trim()?.removePrefix("v")?.toIntOrNull() ?: 0
+        return Info(latest, stable)
+    }
+
+    /** Starts downloading release v[version]; returns its download id, or NEEDS_PERMISSION / FAILED. */
+    fun start(a: Activity, version: Int): Long {
         if (Build.VERSION.SDK_INT >= 26 && !a.packageManager.canRequestPackageInstalls()) {
             try {
                 a.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + a.packageName)))
@@ -37,8 +78,8 @@ object Update {
         return try {
             val dm = a.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             a.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.listFiles()?.forEach { it.delete() }
-            val req = DownloadManager.Request(Uri.parse(URL))
-                .setTitle("كاميرات البيت — آخر نسخة")
+            val req = DownloadManager.Request(Uri.parse(url(version)))
+                .setTitle(L.t(a, "كاميرات البيت — النسخة $version", "Home Cameras — version $version"))
                 .setMimeType(APK)
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
                 .setDestinationInExternalFilesDir(a, Environment.DIRECTORY_DOWNLOADS, "ipcam.apk")

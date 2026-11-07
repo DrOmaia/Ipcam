@@ -13,6 +13,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 // Small helpers for the screens (built in code, no layout files). Night colours like the prayer-times app.
+// On a TV every text is 1.3× bigger (read from the sofa) and every button shows a gold ring when the remote is on it.
 object Ui {
     const val BG = 0xFF0E1424.toInt()
     const val CARD = 0xFF18213A.toInt()
@@ -20,21 +21,26 @@ object Ui {
     const val GOLD = 0xFFD4A94F.toInt()
     const val GOLD_DOWN = 0xFFB98F3A.toInt()
     const val TEXT = 0xFFF2EFE8.toInt()
-    const val MUTED = 0xFF9AA3B5.toInt()
-    const val RED = 0xFFE0645C.toInt()
+    const val MUTED = 0xFFA9B1C2.toInt()
+    const val RED = 0xFFE87A72.toInt()
     const val GREEN = 0xFF6FCF97.toInt()
+
+    private var scaleCache: Float? = null
+
+    /** Text scale: 1.3 on a TV, 1 on a phone. */
+    fun scale(c: Context): Float = scaleCache ?: (if (Device.isTv(c)) 1.3f else 1f).also { scaleCache = it }
 
     fun dp(c: Context, v: Int): Int = (v * c.resources.displayMetrics.density + 0.5f).toInt()
 
-    // Arabic screens: right to left even when the phone itself is in English
+    /** Right to left in Arabic, left to right in English (Base does this for every screen). */
     fun rtl(a: Activity) {
-        a.window.decorView.layoutDirection = View.LAYOUT_DIRECTION_RTL
+        a.window.decorView.layoutDirection = if (L.en(a)) View.LAYOUT_DIRECTION_LTR else View.LAYOUT_DIRECTION_RTL
     }
 
     fun text(c: Context, s: String, size: Float = 16f, color: Int = TEXT, bold: Boolean = false): TextView {
         val t = TextView(c)
         t.text = s
-        t.textSize = size
+        t.textSize = size * scale(c)
         t.setTextColor(color)
         if (bold) t.setTypeface(t.typeface, Typeface.BOLD)
         return t
@@ -87,12 +93,13 @@ object Ui {
         e.hint = hint
         e.inputType = type
         e.isSingleLine = true
-        e.textSize = 17f
+        e.textSize = 17f * scale(c)
         e.setTextColor(TEXT)
         e.setHintTextColor(MUTED)
         val p = dp(c, 12)
         e.setPadding(p, p, p, p)
         e.background = states(c, CARD, CARD, 12)
+        e.minHeight = dp(c, 52)
         return e
     }
 
@@ -119,9 +126,15 @@ object Ui {
         else -> "$n $many"
     }
 
-    fun cameras(n: Int) =
+    fun cameras(c: Context, n: Int): String = if (L.en(c)) {
+        when (n) { 0 -> "No cameras yet"; 1 -> "1 camera"; else -> "$n cameras" }
+    } else {
         if (n == 0) "لا توجد كاميرات بعد" else count(n, "كاميرا واحدة", "كاميرتان", "كاميرات", "كاميرا")
+    }
 
-    fun devices(n: Int) =
+    fun devices(c: Context, n: Int): String = if (L.en(c)) {
+        when (n) { 0 -> "No device found"; 1 -> "1 device"; else -> "$n devices" }
+    } else {
         if (n == 0) "لم أجد أي جهاز" else count(n, "جهاز واحد", "جهازان", "أجهزة", "جهازًا")
+    }
 }

@@ -1,27 +1,49 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- the cameras are on the home Wi-Fi: RTSP for the video, ONVIF (multicast) to find them -->
+    <!-- the cameras are on the home Wi-Fi: RTSP for the video, ONVIF (multicast) to find them, NSD to find the family's devices -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-    <!-- update from inside the app (downloads the latest release, then opens the installer) -->
+    <!-- update from inside the app (downloads the release, then opens the installer) -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- motion alerts: a service that keeps watching, a notification on phones, the camera over other apps on the TV -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- phone as a camera, and talking through it -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- snapshots and clips in the gallery on Android 9 and older -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
     <!-- also runs on Android TV / Google TV (remote control) -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.wifi" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
-    <!-- allowBackup off: camera passwords stay on this device only -->
+    <!-- allowBackup off: camera passwords stay on this device only.
+         cleartext on: cameras on the home network speak plain HTTP (ONVIF, snapshots) -->
     <application
+        android:name=".App"
         android:allowBackup="false"
         android:banner="@drawable/banner"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"
@@ -40,8 +62,60 @@
 
         <activity android:name=".ScanActivity" />
 
+        <activity android:name=".SettingsActivity" />
+
+        <activity
+            android:name=".TransferActivity"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".LockActivity"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop" />
+
+        <!-- live view: picture-in-picture on phones; rotation does not reconnect the cameras -->
         <activity
             android:name=".WatchActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|navigation"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
+        <!-- phone as a camera -->
+        <activity
+            android:name=".CameraModeActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
+            android:screenOrientation="unspecified" />
+
+        <service
+            android:name=".AlertService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <service
+            android:name=".CameraService"
+            android:exported="false"
+            android:foregroundServiceType="camera|microphone" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".CamWidget"
+            android:exported="false"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_cams_info" />
+        </receiver>
     </application>
 </manifest>

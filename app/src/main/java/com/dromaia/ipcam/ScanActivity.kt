@@ -1,6 +1,5 @@
 package com.dromaia.ipcam
 
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.wifi.WifiManager
@@ -12,8 +11,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import java.util.concurrent.atomic.AtomicInteger
 
-/** Searches the home network for cameras; tap one to add it. */
-class ScanActivity : Activity() {
+/** Searches the home network for cameras (ONVIF, RTSP 554, IP Webcam 8080, phones in camera mode); tap one to add it. */
+class ScanActivity : Base() {
     private val found = LinkedHashMap<String, Found>()
     @Volatile private var cancelled = false
     private var running = false
@@ -22,23 +21,21 @@ class ScanActivity : Activity() {
     private lateinit var progress: ProgressBar
     private lateinit var list: LinearLayout
     private lateinit var again: TextView
-    private lateinit var tips: TextView
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
-        Ui.rtl(this)
-
         val scroll = ScrollView(this)
         scroll.setBackgroundColor(Ui.BG)
         scroll.isFillViewport = true
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
-        val p = Ui.dp(this, 20)
+        val p = Ui.dp(this, if (tv) 48 else 20)
         col.setPadding(p, p, p, p)
         scroll.addView(col)
 
-        col.addView(Ui.text(this, "البحث في الشبكة", 26f, Ui.TEXT, true))
+        col.addView(Ui.text(this, t("البحث في الشبكة", "Search the network"), 26f, Ui.TEXT, true))
         status = Ui.text(this, "", 15f, Ui.MUTED)
+        status.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         col.addView(status, Ui.below(this, 8))
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
         progress.max = 254
@@ -48,15 +45,21 @@ class ScanActivity : Activity() {
         list.orientation = LinearLayout.VERTICAL
         col.addView(list, Ui.below(this, 8))
 
-        again = Ui.button(this, "إعادة البحث") { scan() }
+        again = Ui.button(this, t("إعادة البحث", "Search again")) { scan() }
         col.addView(again, Ui.below(this, 16))
 
-        tips = Ui.text(
+        val tips = Ui.text(
             this,
-            "إذا لم تظهر الكاميرا:\n" +
-                "• تأكد أن الجهاز على نفس الواي فاي الذي عليه الكاميرات.\n" +
-                "• إذا كانت الكاميرات موصولة على مسجّل (NVR/DVR) فسيظهر المسجّل وحده: أضفه واختر رقم القناة لكل كاميرا.\n" +
-                "• تقدر دائمًا تضيفها يدويًا من «إضافة» إذا كنت تعرف عنوانها (من تطبيق الكاميرا أو صفحة الراوتر).",
+            t(
+                "إذا لم تظهر الكاميرا:\n" +
+                    "• تأكد أن الجهاز على نفس الواي فاي الذي عليه الكاميرات.\n" +
+                    "• إذا كانت الكاميرات موصولة على مسجّل (NVR/DVR) فسيظهر المسجّل وحده: أضفه واختر رقم القناة لكل كاميرا.\n" +
+                    "• تقدر دائمًا تضيفها يدويًا من «إضافة كاميرا» إذا كنت تعرف عنوانها (من تطبيق الكاميرا أو صفحة الراوتر).",
+                "If a camera does not appear:\n" +
+                    "• Make sure this device is on the same Wi-Fi as the cameras.\n" +
+                    "• Cameras on a recorder (NVR/DVR) show as the recorder only: add it and choose each camera's channel.\n" +
+                    "• You can always add it by hand with “Add camera” if you know its address (from the camera app or the router page).",
+            ),
             14f, Ui.MUTED,
         )
         tips.setLineSpacing(0f, 1.25f)
@@ -68,7 +71,7 @@ class ScanActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (!running) render() // "مضافة" marks after adding one
+        if (!running) render() // «added» marks after adding one
     }
 
     override fun onDestroy() {
@@ -81,7 +84,7 @@ class ScanActivity : Activity() {
         if (running) return
         val local = Discovery.localIPv4()
         if (local == null) {
-            status.text = "الجهاز غير متصل بشبكة البيت. اتصل بالواي فاي ثم أعد البحث."
+            status.text = t("الجهاز غير متصل بشبكة البيت. اتصل بالواي فاي ثم أعد البحث.", "This device is not on the home network. Connect to the Wi-Fi and search again.")
             progress.visibility = View.GONE
             return
         }
@@ -90,7 +93,7 @@ class ScanActivity : Activity() {
         found.clear()
         render()
         val ip = local.hostAddress ?: ""
-        status.text = "جاري البحث في الشبكة ${ip.substringBeforeLast('.')}.x …"
+        status.text = t("جاري البحث في الشبكة ${ip.substringBeforeLast('.')}.x …", "Searching ${ip.substringBeforeLast('.')}.x …")
         progress.progress = 0
         progress.visibility = View.VISIBLE
         again.visibility = View.GONE
@@ -103,7 +106,7 @@ class ScanActivity : Activity() {
         } catch (_: Exception) {
         }
 
-        val left = AtomicInteger(2)
+        val left = AtomicInteger(3)
         val finished: () -> Unit = {
             if (left.decrementAndGet() == 0) runOnUiThread { done() }
         }
@@ -126,6 +129,15 @@ class ScanActivity : Activity() {
             }
             finished()
         }.start()
+        Thread {
+            try {
+                PhoneCams.discover(this, 5000) { name, host, port ->
+                    runOnUiThread { add(Found(host, Brand.PHONE, name, rtsp = true, port = port)) }
+                }
+            } catch (_: Exception) {
+            }
+            finished()
+        }.start()
     }
 
     private fun add(f: Found) {
@@ -141,7 +153,8 @@ class ScanActivity : Activity() {
         if (isFinishing) return
         progress.visibility = View.GONE
         again.visibility = View.VISIBLE
-        status.text = if (found.isEmpty()) "انتهى البحث: لم أجد أي كاميرا." else "انتهى البحث: " + Ui.devices(found.size) + ". اضغط على الجهاز لإضافته."
+        status.text = if (found.isEmpty()) t("انتهى البحث: لم أجد أي كاميرا.", "Search finished: no camera found.")
+        else t("انتهى البحث: ", "Search finished: ") + Ui.devices(this, found.size) + t(". اضغط على الجهاز لإضافته.", ". Tap a device to add it.")
     }
 
     private fun releaseLock() {
@@ -156,15 +169,16 @@ class ScanActivity : Activity() {
         list.removeAllViews()
         val saved = Store.all(this)
         for (f in found.values.sortedBy { it.lastPart() }) {
-            val mine = saved.firstOrNull { it.host == f.ip }
+            val mine = saved.firstOrNull { it.address() == f.ip }
             val card = Ui.card(this)
-            card.addView(Ui.text(this, (f.brand?.label ?: "جهاز فيديو") + "  —  " + f.ip, 17f, Ui.TEXT, true))
+            card.addView(Ui.text(this, (f.brand?.label(this) ?: t("جهاز فيديو", "Video device")) + "  —  " + f.ip, 17f, Ui.TEXT, true))
             val details = ArrayList<String>()
             if (f.model.isNotEmpty()) details.add(f.model)
             if (f.onvif) details.add("ONVIF")
-            if (f.rtsp) details.add("RTSP")
+            if (f.rtsp) details.add("RTSP" + if (f.port > 0) " ${f.port}" else "")
             if (details.isNotEmpty()) card.addView(Ui.text(this, details.joinToString(" · "), 13f, Ui.MUTED), Ui.below(this, 4))
-            if (mine != null) card.addView(Ui.text(this, "✓ مضافة باسم «${mine.name}»", 13f, Ui.GREEN), Ui.below(this, 4))
+            if (mine != null) card.addView(Ui.text(this, t("✓ مضافة باسم «${mine.name}»", "✓ Added as “${mine.name}”"), 13f, Ui.GREEN), Ui.below(this, 4))
+            card.contentDescription = (f.brand?.label(this) ?: t("جهاز فيديو", "Video device")) + " " + f.ip
             card.setOnClickListener {
                 val i = Intent(this, EditActivity::class.java)
                 if (mine != null) {
@@ -172,6 +186,8 @@ class ScanActivity : Activity() {
                 } else {
                     i.putExtra("host", f.ip)
                     f.brand?.let { b -> i.putExtra("brand", b.key) }
+                    if (f.port > 0) i.putExtra("port", f.port)
+                    if (f.brand == Brand.PHONE && f.model.isNotEmpty()) i.putExtra("name", f.model)
                 }
                 startActivity(i)
             }

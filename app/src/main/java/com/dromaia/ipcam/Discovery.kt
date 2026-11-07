@@ -22,20 +22,24 @@ class Found(
     var model: String = "",
     var onvif: Boolean = false,
     var rtsp: Boolean = false,
+    var port: Int = 0, // RTSP port when it is not 554 (IP Webcam 8080, a phone with this app 8554)
 ) {
     fun merge(o: Found) {
-        if (brand == null) brand = o.brand
+        if (brand == null || (o.brand == Brand.PHONE || o.brand == Brand.IPWEBCAM)) brand = o.brand ?: brand
         if (model.isEmpty()) model = o.model
         onvif = onvif || o.onvif
         rtsp = rtsp || o.rtsp
+        if (port == 0) port = o.port
     }
 
     fun lastPart(): Int = ip.substringAfterLast('.').toIntOrNull() ?: 0
 }
 
-// Finding cameras on the home Wi-Fi in two ways at once:
+// Finding cameras on the home Wi-Fi in three ways at once:
 //  1. ONVIF: one "who is a camera?" message to the whole network; cameras answer with their make and model.
-//  2. RTSP: knock on port 554 (the video port) of every address 1–254; also finds cameras with ONVIF switched off.
+//  2. RTSP: knock on port 554 (the video port) of every address 1–254; also finds cameras with ONVIF switched off;
+//     and on port 8080 (a phone running the IP Webcam app).
+//  3. Phones running this app's camera mode announce themselves (PhoneCams).
 object Discovery {
 
     /** This device's own address on the home network (Wi-Fi or cable), or null. */
@@ -144,6 +148,11 @@ object Discovery {
                 if (ip != self && !cancelled()) {
                     val server = rtspAnswer(ip, 554, 700)
                     if (server != null) onFound(Found(ip, guess(server), server, rtsp = true))
+                    // a phone with the IP Webcam app: RTSP on 8080 (a router's web page on 8080 answers HTTP: skipped)
+                    if (!cancelled()) {
+                        val webcam = rtspAnswer(ip, 8080, 500, rtspOnly = true)
+                        if (webcam != null) onFound(Found(ip, Brand.IPWEBCAM, webcam.ifEmpty { "IP Webcam" }, rtsp = true, port = 8080))
+                    }
                 }
                 onProgress(done.incrementAndGet())
             }
@@ -152,8 +161,22 @@ object Discovery {
         pool.awaitTermination(60, TimeUnit.SECONDS)
     }
 
-    /** null = nothing on that port; otherwise the device's "Server" name (may be empty). */
-    private fun rtspAnswer(ip: String, port: Int, timeoutMs: Int): String? {
+    /** Is something answering on host:port? (the green / red dot of each camera on the home screen). Blocking. */
+    fun reachable(host: String, port: Int, timeoutMs: Int = 1500): Boolean {
+        if (host.isBlank()) return false
+        return try {
+            Socket().use { it.connect(InetSocketAddress(host, port), timeoutMs) }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * null = nothing on that port (or, with [rtspOnly], something that is not RTSP);
+     * otherwise the device's "Server" name (may be empty).
+     */
+    private fun rtspAnswer(ip: String, port: Int, timeoutMs: Int, rtspOnly: Boolean = false): String? {
         val s = Socket()
         try {
             s.connect(InetSocketAddress(ip, port), timeoutMs)
@@ -166,11 +189,12 @@ object Discovery {
             s.getOutputStream().write("OPTIONS rtsp://$ip:$port/ RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: ipcam\r\n\r\n".toByteArray())
             val buf = ByteArray(2048)
             val n = s.getInputStream().read(buf)
-            if (n <= 0) return ""
+            if (n <= 0) return if (rtspOnly) null else ""
             val reply = String(buf, 0, n, Charsets.ISO_8859_1)
+            if (rtspOnly && !reply.startsWith("RTSP/")) return null
             return Regex("(?im)^Server:\\s*(.+?)\\s*$").find(reply)?.groupValues?.get(1) ?: ""
         } catch (_: IOException) {
-            return ""
+            return if (rtspOnly) null else ""
         } finally {
             try { s.close() } catch (_: IOException) {}
         }

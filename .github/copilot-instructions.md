@@ -15,41 +15,67 @@ Edit only this file, then run the script.
   If you notice another problem, mention it in one line at the end; do not fix it unasked.
 
 ## 2. What the app is
-«كاميرات البيت»: watch the IP cameras on the home Wi-Fi from an **Android phone** (also runs on Android TV with the remote).
-Home network only (no internet relay, no cloud accounts). Arabic only, right to left, night colours (navy + gold, like prayer-tv).
-- Makes: **Hikvision / HiLook**, **Dahua / Imou**, **TP-Link Tapo**, and any other camera by a full **RTSP link**.
-- Add a camera by hand, or **search the network** (ONVIF discovery + knocking on RTSP port 554 of every address).
-- Watch one camera full screen (full quality, sound button, quality button) or **all cameras**, four per page (light stream).
-- Update from inside the app (works while the repository is public).
+«كاميرات البيت» / "Home Cameras": watch the IP cameras on the home Wi-Fi. **One APK for phones and Android TV**
+(his TCL Google TV), each with its own look: phone = list by group, touch; TV = Google-TV-style rows of big cards,
+everything reachable with the D-pad remote (gold focus ring, cards grow on focus). Home network only (no cloud).
+**Arabic (default) and English** (Settings → Language; every text is `L.t(c, "عربي", "English")` / `t(…)` in a `Base`
+screen; Arabic right to left). Night colours (navy + gold, like prayer-tv).
+- Makes: **Hikvision / HiLook**, **Dahua / Imou**, **TP-Link Tapo**, **IP Webcam** (an old phone with that app),
+  **a phone running this app's camera mode**, and any camera by a full **RTSP link**.
+- Add a camera by hand, or **search the network** (ONVIF discovery, RTSP 554, IP Webcam 8080, phones in camera mode).
+- **Groups** (e.g. «داخل البيت», «الحوش»), a green / red **status dot** per camera, **shortcuts** (app icon long-press,
+  pinned shortcut per camera) and a **home-screen widget**.
+- **Watch**: one camera (full quality, sound, snapshot, recording, pinch zoom, picture-in-picture on phones, PTZ arrows
+  for moving cameras, push-to-talk to phone cameras) or **all cameras** four per page (light stream); **tour** (one
+  camera after the other); remote keys: ◄ ► next / previous, 1–9 camera N, 0 grid, OK menu.
+- **Move cameras over the same Wi-Fi** to the TV or a family phone (Settings → Send / Receive, 4-digit code on the
+  receiving screen). This is the only way camera passwords leave a device, and only by the owner's action.
+- **Motion alerts** (ONVIF events): phone = notification with a snapshot; TV = the camera pops up in a corner over any
+  app for 30 s; alert hours (all day / night / custom).
+- **Phone as a camera**: an old phone becomes an RTSP camera (built-in server, port 8554) that the other devices find;
+  viewers can talk through it.
+- Optional **PIN lock**. **Updates** from Settings: shows this version, the newest and the stable one.
 User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md`.
 
 ## 3. Files
 | Path | What |
 | --- | --- |
-| `app/src/main/java/com/dromaia/ipcam/MainActivity.kt` | Home: list of cameras, add, search, watch all, version and update button. |
-| `EditActivity.kt` | Add / change / delete a camera; make buttons, hints per make, preview of the stream link. |
-| `ScanActivity.kt` | Network search screen. |
-| `Discovery.kt` | ONVIF WS-Discovery (multicast 239.255.255.250:3702) and the port-554 scan; guesses the make. |
-| `WatchActivity.kt` | Live view: one camera, or the grid (1, 2, 2 × 2; pages of four). |
-| `Tile.kt` | One video (Media3 ExoPlayer, RTSP over TCP, small buffer), error message in Arabic, retry every 5 s. |
-| `Camera.kt` | `Camera`, `Brand` (RTSP link of each make), `Store` (saved in SharedPreferences `ipcam` / key `cameras`). |
-| `Update.kt` | Download the latest release and open the installer (same way as prayer-tv). |
-| `Ui.kt` | Colours, buttons, fields, Arabic number agreement (`count`, `cameras`, `devices`). |
-| `app/src/main/AndroidManifest.xml`, `app/src/main/res/` | Permissions, icon, TV banner, app name. |
+| `app/src/main/java/com/dromaia/ipcam/Prefs.kt` | Device settings (`Prefs`, SharedPreferences `ipcam-settings`), language `L`, `Device.isTv/name`. |
+| `Base.kt` | `Base` (every screen: direction, PIN lock), `Watch` intent extras, `Lock`, `App` (Application). |
+| `MainActivity.kt` | Home: phone layout and TV layout, groups, status dots, shortcuts, «new version» banner, open-on-all. |
+| `EditActivity.kt` | Add / change / delete a camera: make, group, address, channel / link, ONVIF options, alerts, PTZ. |
+| `ScanActivity.kt`, `Discovery.kt` | Network search: ONVIF WS-Discovery, RTSP 554 / 8080 scan, phones (`PhoneCams`); `reachable()`. |
+| `WatchActivity.kt`, `Tile.kt` | Live view (grid / single / tour / PiP / remote keys / PTZ pad / talk); one video with zoom & snapshot. |
+| `Media.kt`, `Recorder.kt` | Save snapshots and recorded clips to the gallery. |
+| `SettingsActivity.kt` | Language, opening, tour, motion alerts + hours + permissions, PIN, moving cameras, phone camera, updates. |
+| `LockActivity.kt` | PIN pad (also choosing a PIN). |
+| `Transfer.kt`, `TransferActivity.kt` | Send / receive cameras on the same Wi-Fi (NSD `_ipcamshare._tcp`, code). |
+| `Onvif.kt`, `Alerts.kt` | ONVIF client (PTZ, snapshot, events); alert service, TV pop-up, boot receiver. |
+| `CameraModeActivity.kt`, `CameraService.kt`, `RtspServer.kt`, `PhoneCams.kt`, `Talk.kt` | Phone as a camera + talk. |
+| `CamWidget.kt`, `res/layout/widget_cams.xml` | Home-screen widget. |
+| `Update.kt` | Newest / stable version from GitHub, download and install. |
+| `Camera.kt` | `Camera`, `Brand` (RTSP link of each make), `Store` (SharedPreferences `ipcam` / key `cameras`). |
+| `Ui.kt` | Colours, buttons, fields (1.3× text on TV), Arabic / English number agreement. |
+| `app/src/main/AndroidManifest.xml`, `app/src/main/res/` | Permissions, services, icon, TV banner, widget. |
 | `.github/workflows/build.yml` | Builds, signs and publishes every push to `main` as release `vN`; "mark stable" and "restore stable". |
 | `app/release.keystore` | The signing key (PKCS12, EC P-256, alias `ipcam`). Public in this repository by the owner's choice (same as prayer-tv and Mani). **Never change, delete or replace it**: a different key stops installed apps from updating. |
 
 RTSP links (`Camera.rtsp`): Hikvision `/Streaming/Channels/{ch}01` (main) and `{ch}02` (sub);
-Dahua `/cam/realmonitor?channel={ch}&subtype=0|1`; Tapo `/stream1` and `/stream2`. User and password are URL-encoded.
+Dahua `/cam/realmonitor?channel={ch}&subtype=0|1`; Tapo `/stream1` and `/stream2`; IP Webcam `:8080/h264_ulaw.sdp`;
+phone camera `:8554/live` and `/low` (user `ipcam`). User and password are URL-encoded.
 
 ## 4. Hard rules (do not break the app)
-1. **No new libraries, build steps or servers** beyond Media3 (already used). Plain Kotlin, screens built in code.
+1. **No new libraries, build steps or servers** beyond Media3 (already used). Plain Kotlin, screens built in code
+   (XML only where Android requires it: the widget and the PlayerView with a TextureView).
 2. **Keep the saved cameras.** Never rename or remove a stored key (`ipcam` / `cameras`, the JSON fields) without
-   reading the old one. Passwords stay on the device only (`allowBackup=false`); never send them anywhere.
+   reading the old one (new JSON fields get defaults in `Camera.fromJson`). Passwords stay on the device
+   (`allowBackup=false`); they leave it only through the owner's own Wi-Fi transfer, never to the internet.
 3. **Never touch** `app/release.keystore`, the package name `com.dromaia.ipcam`, or the version lines in
    `app/build.gradle.kts` (version = build number, automatic).
-4. **Arabic text** is correct Modern Standard Arabic, masculine when addressing him, with correct number agreement (`Ui.count`).
-5. **Phone and TV** share the code: everything must also work with the TV remote (buttons and cards are focusable).
+4. **Every text in Arabic and English** (`t("…","…")`). Arabic: correct Modern Standard Arabic, masculine when
+   addressing him, correct number agreement (`Ui.count`). Icon-only buttons need a `contentDescription` in both.
+5. **Phone and TV** share the code but each has its own look (`tv` in `Base`): everything must also work with the
+   TV remote (focusable buttons and cards, visible gold focus), and with touch on phones (targets ≥ 48 dp).
 6. **Small, focused changes.** Change only the files the request needs. Never delete features.
 7. **Git safety:** never force-push `main`, never rewrite history, never delete tags or releases (`vN`).
    Work on `main` (it publishes directly), one clear commit per request.
