@@ -45,6 +45,9 @@ screen; Arabic right to left). Night colours (navy + gold, like prayer-tv).
   (`remoteHost/remotePort/remoteHttp`); `Route` tries the local address first on the camera's own network, else the outside one.
   A Tapo camera at another house (no router access): the camera's menu has «افتح في تطبيق Tapo» (opens `com.tplink.iot`,
   or its Google Play page; `<queries>` in the manifest).
+- **Network changes** (`Net.kt`): leaving the Wi-Fi and coming back (or another Wi-Fi) reconnects by itself: videos on
+  screen, status dots, alert watchers (their waits end), and refused-password blocks / remembered routes are forgotten.
+  A live picture frozen for 15 s reconnects too.
 - Optional **PIN lock**. **Updates** from Settings: shows this version, the newest and the stable one.
 User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md`.
 
@@ -63,6 +66,7 @@ User-facing description: `README.md` (Arabic). History of changes: `CHANGELOG.md
 | `LockActivity.kt` | PIN pad (also choosing a PIN). |
 | `Transfer.kt`, `TransferActivity.kt` | Send / receive cameras on the same Wi-Fi (NSD `_ipcamshare._tcp`, code). |
 | `Onvif.kt`, `Alerts.kt` | ONVIF client (PTZ, snapshot, events); alert service (alerts by type), TV pop-up, boot receiver. |
+| `Net.kt` | Follows the device's network; `Net.add/remove` listeners, `Net.epoch`; resets `Route`, `Hik` / `Onvif` / `Snap` refusals. |
 | `Prayer.kt` | Prayer times on the device (cities, Umm al-Qura / Jordan, Ramadan Isha), `Prayer.quiet()` for the alerts. |
 | `Hik.kt` | Hikvision ISAPI: device name, channels, recordings search, events search, alert stream, recorder clock. |
 | `PlaybackActivity.kt`, `EventsActivity.kt` | Recordings (24 h timeline) and events list of Hikvision recorders. |

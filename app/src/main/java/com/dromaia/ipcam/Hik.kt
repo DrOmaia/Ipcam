@@ -364,6 +364,9 @@ object Hik {
 
     private fun login(cam: Camera): String = listOf(device(cam), cam.user, cam.pass).joinToString("\u0001")
 
+    /** Another network: a password refused there (maybe by another device at the same address) is tried again. */
+    fun forgetRefused() = refusedUntil.clear()
+
     private fun blockedFor(cam: Camera): Long {
         val key = login(cam)
         val until = refusedUntil[key] ?: return 0L
@@ -738,7 +741,8 @@ object Hik {
 
     private fun nap(ms: Long, stop: () -> Boolean) {
         val end = SystemClock.elapsedRealtime() + ms
-        while (!stop() && SystemClock.elapsedRealtime() < end) {
+        val net = Net.epoch // the network changed (e.g. back home): no more waiting, try now
+        while (!stop() && SystemClock.elapsedRealtime() < end && Net.epoch == net) {
             try {
                 Thread.sleep(250)
             } catch (_: InterruptedException) {

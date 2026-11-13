@@ -62,8 +62,17 @@ class MainActivity : Base() {
         }
     }
 
+    // the network changed: the status dots again
+    private val onNet = Runnable { if (!building) checkStatus(Store.all(this)) }
+
+    override fun onPause() {
+        Net.remove(onNet)
+        super.onPause()
+    }
+
     override fun onResume() {
         super.onResume()
+        Net.add(onNet)
         // alerts start again if the system had stopped the app
         try {
             Alerts.refresh(this)

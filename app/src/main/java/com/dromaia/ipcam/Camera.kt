@@ -197,6 +197,9 @@ object Route {
         return if (remoteFirst) listOf(remote, local) else listOf(local, remote)
     }
 
+    /** Another network: decide again between the home and the outside address. */
+    fun reset() = lastRemote.clear()
+
     /** Start with the outside address? */
     fun preferRemote(cam: Camera): Boolean = cam.hasRemote() && targets(cam).first().remote
 

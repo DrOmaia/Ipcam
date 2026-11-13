@@ -140,6 +140,8 @@ class App : Application() {
             override fun onActivitySaveInstanceState(a: Activity, b: Bundle) {}
             override fun onActivityDestroyed(a: Activity) {}
         })
+        // leaving the Wi-Fi and coming back: the cameras connect again by themselves
+        Net.start(this)
         // motion alerts keep running after a restart of the app (the service decides whether there is anything to watch)
         try {
             Alerts.refresh(this)

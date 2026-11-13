@@ -61,6 +61,12 @@ object Snap {
     // the camera's sign-in → until when (elapsedRealtime) no RTSP sign-in is tried after a refused password
     private val refusedUntil = ConcurrentHashMap<String, Long>()
 
+    /** Another network: what failed there is tried again. */
+    fun forgetRefused() {
+        skipUntil.clear()
+        refusedUntil.clear()
+    }
+
     /** A small picture of [cam] now, or null when none could be had. Never throws. */
     fun grab(c: Context, cam: Camera): Bitmap? {
         val app = c.applicationContext ?: c

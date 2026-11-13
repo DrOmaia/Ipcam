@@ -53,6 +53,11 @@ class Tile(
     private val handler = Handler(Looper.getMainLooper())
     private val retry = Runnable { start() }
     private val nextTarget = Runnable { connect() }
+    private var running = false // between start() and stop() / pause()
+    // the network changed (Wi-Fi back, another Wi-Fi): connect again now, also after a refused password
+    private val onNet = Runnable { if (running && player?.isPlaying != true) start() }
+    // a live picture that froze with no error (weak Wi-Fi): connect again
+    private val stalled = Runnable { if (running && onEnded == null && player?.isPlaying != true) start() }
     private var said = "" // what TalkBack reads after the name now ("" = playing)
     private var targets: List<Route.Target> = emptyList() // the addresses to try, in order
     private var target = 0                                // the one tried now
@@ -102,6 +107,8 @@ class Tile(
 
     private val listener = object : Player.Listener {
         override fun onPlaybackStateChanged(state: Int) {
+            handler.removeCallbacks(stalled)
+            if (state == Player.STATE_BUFFERING && readyOnce && onEnded == null) handler.postDelayed(stalled, 15_000)
             if (state == Player.STATE_READY) {
                 status.visibility = View.GONE
                 line.visibility = View.GONE
@@ -304,6 +311,8 @@ class Tile(
 
     fun start() {
         stop()
+        running = true
+        Net.add(onNet)
         authFailed = false
         targets = Route.targets(cam) // home first at home, the outside address first away (whichever worked last)
         target = 0
@@ -352,6 +361,8 @@ class Tile(
     }
 
     fun stop() {
+        running = false
+        Net.remove(onNet)
         handler.removeCallbacks(retry)
         hasPicture = false
         release()
@@ -359,6 +370,8 @@ class Tile(
 
     /** Stops the stream but keeps its last picture on screen (a photo can still be taken). [start] goes on. */
     fun pause() {
+        running = false
+        Net.remove(onNet)
         handler.removeCallbacks(retry)
         release()
         status.visibility = View.GONE
@@ -368,6 +381,7 @@ class Tile(
     // lets go of the player (and of the address badge)
     private fun release() {
         handler.removeCallbacks(nextTarget)
+        handler.removeCallbacks(stalled)
         readyOnce = false
         if (away) {
             away = false

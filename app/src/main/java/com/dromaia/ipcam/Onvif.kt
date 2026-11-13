@@ -142,6 +142,9 @@ object Onvif {
      */
     private val refused = ConcurrentHashMap<String, Long>()
 
+    /** Another network: a password refused there (maybe by another device at the same address) is tried again. */
+    fun forgetRefused() = refused.clear()
+
     // ------------------------------------------------------------------ public API
 
     /** Turn the camera: x = left (-1) … right (1), y = down (-1) … up (1), zoom = out (-1) … in (1). Keeps moving until [ptzStop]. */
@@ -490,7 +493,8 @@ object Onvif {
 
     private fun nap(ms: Long, stop: () -> Boolean) {
         val end = SystemClock.elapsedRealtime() + ms
-        while (!stop() && SystemClock.elapsedRealtime() < end) {
+        val net = Net.epoch // the network changed (e.g. back home): no more waiting, try now
+        while (!stop() && SystemClock.elapsedRealtime() < end && Net.epoch == net) {
             try {
                 Thread.sleep(250)
             } catch (_: InterruptedException) {
